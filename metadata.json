@@ -1,0 +1,7 @@
+{
+  "name": "Lumina AI",
+  "description": "A bioluminescent AI learning interface featuring adaptive visualization, search grounding, and deep reasoning capabilities.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
