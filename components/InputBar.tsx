@@ -1,5 +1,4 @@
 import React, { useRef, useState } from 'react';
-import { Send, Mic, Image as ImageIcon, Sparkles, BrainCircuit } from 'lucide-react';
 import { AppState, ProcessingOptions } from '../types';
 
 interface InputBarProps {
@@ -85,9 +84,9 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
           <img src={selectedImage} alt="Preview" className="h-16 w-16 rounded-lg object-cover border border-white/20" />
           <button 
             onClick={() => setSelectedImage(null)}
-            className="absolute -top-2 -right-2 bg-red-500 rounded-full w-5 h-5 flex items-center justify-center text-xs"
+            className="absolute -top-2 -right-2 bg-red-500 rounded-full w-5 h-5 flex items-center justify-center text-xs text-white"
           >
-            ×
+            <i className="fa-solid fa-xmark"></i>
           </button>
         </div>
       )}
@@ -102,17 +101,17 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
           <div className="flex items-center gap-1 pl-2 border-r border-white/10 pr-2 mr-2">
             <button 
                 onClick={() => setUseThinking(!useThinking)}
-                className={`p-2 rounded-full transition-colors ${useThinking ? 'bg-amber-500/20 text-amber-400' : 'text-gray-400 hover:text-white'}`}
+                className={`p-2 rounded-full transition-colors text-lg ${useThinking ? 'bg-amber-500/20 text-amber-400' : 'text-gray-400 hover:text-white'}`}
                 title="Deep Thinking Mode (Gemini Pro)"
             >
-                <BrainCircuit size={18} />
+                <i className="fa-solid fa-brain"></i>
             </button>
             <button 
                 onClick={() => fileInputRef.current?.click()}
-                className={`p-2 rounded-full transition-colors ${selectedImage ? 'text-cyan-400' : 'text-gray-400 hover:text-white'}`}
+                className={`p-2 rounded-full transition-colors text-lg ${selectedImage ? 'text-cyan-400' : 'text-gray-400 hover:text-white'}`}
                 title="Upload Image"
             >
-                <ImageIcon size={18} />
+                <i className="fa-solid fa-image"></i>
             </button>
           </div>
 
@@ -137,20 +136,20 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
           <div className="flex items-center gap-1">
             <button 
                 onClick={toggleRecording}
-                className={`p-2 rounded-full transition-all ${isRecording ? 'bg-red-500/80 text-white animate-pulse' : 'text-gray-400 hover:text-white'}`}
+                className={`p-2 rounded-full transition-all text-lg ${isRecording ? 'bg-red-500/80 text-white animate-pulse' : 'text-gray-400 hover:text-white'}`}
             >
-                <Mic size={20} />
+                <i className="fa-solid fa-microphone"></i>
             </button>
             
             <button 
                 onClick={handleSend}
                 disabled={isDisabled || (!inputText && !selectedImage)}
-                className={`p-2 rounded-full transition-all duration-300 
+                className={`p-2 rounded-full transition-all duration-300 text-lg
                   ${(inputText || selectedImage) && !isDisabled 
                     ? 'bg-white text-black hover:bg-cyan-50 transform hover:scale-105' 
                     : 'bg-white/5 text-gray-500 cursor-not-allowed'}`}
             >
-                {useThinking ? <Sparkles size={20} /> : <Send size={20} />}
+                {useThinking ? <i className="fa-solid fa-wand-magic-sparkles"></i> : <i className="fa-solid fa-paper-plane"></i>}
             </button>
           </div>
         </div>

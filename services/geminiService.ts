@@ -1,113 +1,179 @@
-import { GoogleGenAI, Modality, Type, GenerateContentResponse } from "@google/genai";
-import { ProcessingOptions } from "../types";
+import { GoogleGenAI, Modality, Type } from "@google/genai";
+import { ProcessingOptions, Clarification, VoiceName } from "../types";
 
 // Initialize AI Client
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 // -- Models --
-const MODEL_SEARCH = 'gemini-3-flash-preview';
-const MODEL_THINKING = 'gemini-3-pro-preview'; // For complex tasks
-const MODEL_IMAGE = 'gemini-3-pro-preview'; // For image analysis
+const MODEL_RESEARCH = 'gemini-3-pro-preview'; 
+const MODEL_FAST = 'gemini-3-flash-preview'; 
+const MODEL_WRITER = 'gemini-3-pro-preview';
+
 const MODEL_TTS = 'gemini-2.5-flash-preview-tts';
-const MODEL_STT = 'gemini-3-flash-preview'; // For audio transcription
+const MODEL_STT = 'gemini-3-flash-preview';
+const MODEL_GEN_IMAGE = 'gemini-2.5-flash-image';
+
+export type StreamUpdate = {
+  text?: string;
+  sources?: any[];
+  clarification?: Clarification;
+  status?: string; // "Researching...", "Designing...", "Writing..."
+};
 
 /**
- * Main function to generate text response based on configuration
+ * Orchestrates the 3-Step Pipeline with Streaming
  */
-export const generateResponse = async (
+export const generateResponseStream = async (
   prompt: string,
-  options: ProcessingOptions
-): Promise<{ text: string; sources?: any[] }> => {
-  let model = MODEL_SEARCH;
-  let config: any = {};
-  const tools: any[] = [];
-
-  // System Instruction for Visual Interleaving
-  config.systemInstruction = `
-    You are Lumina, a bioluminescent AI interface. 
-    Format your responses using Markdown. 
-    If a concept implies a process, flow, or hierarchy, VISUALIZE it using a Mermaid.js diagram.
-    Wrap the Mermaid diagram code in [DIAGRAM]...[/DIAGRAM] tags.
-    Use 'graph TD' (Top-Down) or 'graph LR' (Left-Right) for flowcharts.
-    Example: 
-    [DIAGRAM]
-    graph TD;
-    A[Start] --> B{Decision};
-    B -- Yes --> C[Result];
-    [/DIAGRAM]
-    
-    If you find an image URL relevant to the topic (only if you have a valid grounded link), wrap it in [IMAGE]...[/IMAGE].
-    Keep text explanations concise and use bolding for key terms.
-  `;
-
-  // 1. Determine Model & Config based on options
-  if (options.image) {
-    model = MODEL_IMAGE;
-    // Image model logic
-  } else if (options.useThinking) {
-    model = MODEL_THINKING;
-    // Thinking Config - High budget for deep reasoning
-    config.thinkingConfig = { thinkingBudget: 32768 }; 
-    // IMPORTANT: Do NOT set maxOutputTokens when using thinkingBudget logic for this model specifically unless carefully calculated.
-  } else if (options.useSearch) {
-    model = MODEL_SEARCH;
-    tools.push({ googleSearch: {} });
+  options: ProcessingOptions,
+  onUpdate: (update: StreamUpdate) => void
+): Promise<void> => {
+  
+  // 0. Handle Clarification Context
+  let fullPrompt = prompt;
+  if (options.clarificationContext) {
+    fullPrompt = `Context: The user selected "${options.clarificationContext}" for the topic. \n\nOriginal Request: ${prompt}`;
   }
 
-  config.tools = tools.length > 0 ? tools : undefined;
+  // --- PRE-CHECK: Clarification (Fast) ---
+  onUpdate({ status: "Analyzing Request..." });
+  try {
+     const preCheck = await ai.models.generateContent({
+        model: MODEL_FAST,
+        contents: `Analyze this request: "${fullPrompt}". Is it too vague (e.g. "Explain physics", "Write code")? 
+        If YES, return strictly JSON: {"clarification": {"question": "...", "options": [...]}}. 
+        If NO, return string "PROCEED".`,
+        config: { responseMimeType: 'application/json' }
+     });
+     
+     const raw = preCheck.text || "";
+     if (raw.includes("clarification")) {
+        const parsed = JSON.parse(raw);
+        if (parsed.clarification) {
+           onUpdate({ clarification: parsed.clarification, status: "completed" });
+           return;
+        }
+     }
+  } catch(e) { /* Proceed */ }
 
-  // 2. Prepare Contents
-  const parts: any[] = [];
+
+  // --- STEP 1: DEEP RESEARCH ---
+  onUpdate({ status: "Gathering Deep Knowledge..." });
+  let researchData = "";
+  let sources: any[] = [];
   
-  if (options.image) {
-    parts.push({
-      inlineData: {
-        mimeType: 'image/jpeg', // Assuming JPEG for simplicity in this demo
-        data: options.image
+  try {
+    const researchResponse = await ai.models.generateContent({
+      model: MODEL_RESEARCH,
+      contents: `You are a PhD Researcher. Gather factual details, history, mechanisms, and "why it matters" about: ${fullPrompt}. 
+      Output RAW, unstructured data notes. Do not summarize yet.`,
+      config: {
+        tools: options.useSearch ? [{ googleSearch: {} }] : [],
+        thinkingConfig: options.useThinking ? { thinkingBudget: 16384 } : undefined
       }
     });
-  }
-  
-  parts.push({ text: prompt });
-
-  try {
-    const response = await ai.models.generateContent({
-      model: model,
-      contents: { parts },
-      config: config
-    });
-
-    const text = response.text || "I couldn't generate a response.";
     
-    // Extract grounding chunks if available (Google Search)
-    const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => ({
+    researchData = researchResponse.text || "";
+    sources = researchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => ({
       title: chunk.web?.title || 'Source',
       url: chunk.web?.uri
     })).filter((s: any) => s.url) || [];
-
-    return { text, sources };
+    
+    onUpdate({ sources }); // Emit sources early
 
   } catch (error) {
-    console.error("Gemini Generation Error:", error);
+    console.error("Step 1 (Research) Failed", error);
+    // Continue without deep research if fails, or handle error
+  }
+
+  // --- STEP 2: VISUAL ARCHITECTURE (INFOGRAPHIC TUNED) ---
+  onUpdate({ status: "Designing Visuals..." });
+  let imagePrompts = "";
+  try {
+    const visualResponse = await ai.models.generateContent({
+      model: MODEL_FAST,
+      contents: `Analyze this data: ${researchData.substring(0, 10000)}. 
+      Identify 3 key complex concepts that require visual explanation (e.g., structures, processes, comparisons).
+      
+      Generate 3 "Futuristic Infographic" prompts.
+      
+      CRITICAL STYLE GUIDE:
+      - Subject: Holographic 3D Data Visualization, Technical Schematic, or Biological Cutaway.
+      - Aesthetic: Bioluminescent Cyan/Amber/Purple accents on dark background.
+      - Render: Unreal Engine 5, 8k resolution, volumetrics, clear composition.
+      - Do NOT ask for generic scenes. Ask for *diagrammatic* or *schematic* visuals.
+      
+      Return ONLY a JSON list of objects: [{"keyword": "concept_name", "prompt": "..."}]`,
+      config: { responseMimeType: 'application/json' }
+    });
+    imagePrompts = visualResponse.text || "[]";
+  } catch (e) {
+    console.warn("Step 2 (Visuals) Failed", e);
+  }
+
+  // --- STEP 3: FINAL SYNTHESIS (Streaming) ---
+  onUpdate({ status: "Synthesizing Response..." });
+  try {
+    const result = await ai.models.generateContentStream({
+      model: MODEL_WRITER,
+      contents: `
+        DATA: ${researchData}
+        VISUAL_PROMPTS_JSON: ${imagePrompts}
+        
+        TASK: Write a comprehensive, engaging article using the DATA. 
+        INSTRUCTION:
+        - Use H1 (#) for Main Title.
+        - Use H2 (##) for Sections.
+        - INTELLIGENTLY INSERT IMAGES: Use the provided VISUAL_PROMPTS_JSON. 
+          Insert them using markdown syntax: ![PROMPT_TEXT](placeholder) at the EXACT logical point where that concept is explained.
+        - Use [DIAGRAM]graph TD...[/DIAGRAM] for specific flowcharts or processes if needed.
+        - Tone: Visionary, Educational, Empathetic.
+      `
+    });
+
+    let accumulatedText = "";
+    for await (const chunk of result) {
+       const textChunk = chunk.text;
+       if (textChunk) {
+         accumulatedText += textChunk;
+         onUpdate({ text: accumulatedText });
+       }
+    }
+    
+    onUpdate({ status: "completed" });
+
+  } catch (error) {
+    console.error("Step 3 (Synthesis) Failed", error);
     throw error;
   }
 };
 
-/**
- * Transcribe Audio (Speech-to-Text)
- */
+// -- Legacy/Utility Functions --
+
+export const generateStoryModeSummary = async (articleText: string): Promise<string> => {
+  try {
+    const response = await ai.models.generateContent({
+      model: MODEL_FAST,
+      contents: `Convert the following article into a natural, spoken-word podcast script. 
+      Make it sound like a friendly expert explaining it to a friend. 
+      Keep it under 3 minutes of reading time. 
+      Do not include speaker labels or sound effects. Just the text.
+      
+      ARTICLE: ${articleText.substring(0, 20000)}`
+    });
+    return response.text || "";
+  } catch (e) {
+    return articleText; // Fallback
+  }
+};
+
 export const transcribeAudio = async (base64Audio: string): Promise<string> => {
   try {
     const response = await ai.models.generateContent({
       model: MODEL_STT,
       contents: {
         parts: [
-          {
-            inlineData: {
-              mimeType: 'audio/wav', // Adjust if using different recording format
-              data: base64Audio
-            }
-          },
+          { inlineData: { mimeType: 'audio/wav', data: base64Audio } },
           { text: "Transcribe this audio exactly as spoken." }
         ]
       }
@@ -119,46 +185,50 @@ export const transcribeAudio = async (base64Audio: string): Promise<string> => {
   }
 };
 
-/**
- * Generate Speech (Text-to-Speech)
- * Returns raw PCM base64 string
- */
-export const generateSpeech = async (text: string): Promise<string | null> => {
+export const generateSpeech = async (text: string, voiceName: VoiceName = 'Kore'): Promise<string | null> => {
   try {
-    // 1. Remove custom tags
-    let cleanText = text.replace(/\[DIAGRAM\][\s\S]*?\[\/DIAGRAM\]|\[IMAGE\][\s\S]*?\[\/IMAGE\]/g, "");
-    
-    // 2. Remove Markdown syntax that might confuse TTS (bold, headers, lists)
-    // Replace bold/italic (**text**, *text*) with just text
-    cleanText = cleanText.replace(/\*\*(.*?)\*\*/g, "$1").replace(/\*(.*?)\*/g, "$1");
-    // Remove hash headers
-    cleanText = cleanText.replace(/^#+\s+/gm, "");
-    // Remove links [text](url) -> text
-    cleanText = cleanText.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-    // Normalize whitespace
-    cleanText = cleanText.replace(/\s+/g, " ").trim();
-
-    const safeText = cleanText.length > 300 ? cleanText.substring(0, 300) + "..." : cleanText;
-
-    if (!safeText.trim()) return null;
-
+    if (!text.trim()) return null;
     const response = await ai.models.generateContent({
       model: MODEL_TTS,
-      contents: [{ parts: [{ text: safeText }] }],
+      contents: [{ parts: [{ text: text }] }],
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: 'Kore' },
+            prebuiltVoiceConfig: { voiceName: voiceName },
           },
         },
       },
     });
-
     return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || null;
   } catch (error) {
     console.error("TTS Error:", error);
-    // Return null to allow the app to continue without audio rather than crashing
+    return null;
+  }
+};
+
+export const generateImage = async (prompt: string): Promise<string | null> => {
+  try {
+    const response = await ai.models.generateContent({
+      model: MODEL_GEN_IMAGE,
+      contents: {
+        parts: [{ text: prompt }]
+      },
+      config: {
+        imageConfig: { aspectRatio: "16:9" } 
+      }
+    });
+    
+    if (response.candidates?.[0]?.content?.parts) {
+      for (const part of response.candidates[0].content.parts) {
+        if (part.inlineData && part.inlineData.data) {
+          return `data:image/png;base64,${part.inlineData.data}`;
+        }
+      }
+    }
+    return null;
+  } catch (error) {
+    console.error("Image Gen Error:", error);
     return null;
   }
 };
