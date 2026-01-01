@@ -213,7 +213,6 @@ function App() {
      if (idx !== -1 && idx < audioQueue.length - 1) {
         const nextChunk = audioQueue[idx + 1];
         if (nextChunk.status === 'pending') {
-           console.log("Prefetching next chunk:", nextChunk.id);
            // Mark as loading internally in queue via loadChunkAudio
            setAudioQueue(prev => prev.map(c => c.id === nextChunk.id ? { ...c, status: 'loading' } : c));
            loadChunkAudio(nextChunk);
@@ -475,7 +474,7 @@ function App() {
             )}
           </div>
 
-          <div className="w-full flex justify-center pb-8 pt-4 pointer-events-none absolute bottom-0">
+          <div className="w-full flex flex-col items-center justify-end pb-4 pt-4 pointer-events-none absolute bottom-0">
              <div className="pointer-events-auto w-full flex justify-center px-4">
                  <InputBar 
                      appState={appState} 
@@ -483,6 +482,11 @@ function App() {
                      onAudioInput={handleAudioInput}
                      onStop={handleStopGeneration}
                  />
+             </div>
+             
+             {/* Disclaimer */}
+             <div className="mt-4 text-[10px] text-zinc-600 font-mono tracking-tight text-center px-4 opacity-60">
+                Lumina may display inaccurate info, including about people, so double-check its responses.
              </div>
           </div>
       </div>
