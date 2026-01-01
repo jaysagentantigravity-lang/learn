@@ -37,7 +37,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
           initial={{ scale: 0.9, opacity: 0, y: 20 }}
           animate={{ scale: 1, opacity: 1, y: 0 }}
           exit={{ scale: 0.9, opacity: 0, y: 20 }}
-          className="relative bg-[#0a0a0a] border border-white/10 w-full max-w-md rounded-3xl shadow-2xl overflow-hidden"
+          className="relative bg-[#0a0a0a] border border-white/10 w-full max-w-md rounded-[40px] shadow-2xl overflow-hidden"
         >
           {/* Header */}
           <div className="flex items-center justify-between p-6 border-b border-white/5 bg-white/5">
@@ -64,7 +64,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
                 <button
                   key={voice.name}
                   onClick={() => onUpdateSettings({ ...settings, voiceName: voice.name })}
-                  className={`w-full flex items-center justify-between p-4 rounded-xl border transition-all duration-200 ${
+                  className={`w-full flex items-center justify-between p-4 rounded-3xl border transition-all duration-200 ${
                     settings.voiceName === voice.name 
                       ? 'bg-white/10 border-cyan-500/50 shadow-[0_0_15px_-5px_rgba(6,182,212,0.3)]' 
                       : 'bg-black/20 border-white/5 hover:bg-white/5 hover:border-white/10'

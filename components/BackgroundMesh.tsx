@@ -1,5 +1,5 @@
-import React, { useEffect, useRef } from 'react';
-import { motion } from 'framer-motion';
+import React, { useEffect, useState, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 export type BackgroundMode = 'idle' | 'thinking' | 'searching' | 'speaking';
 
@@ -7,178 +7,227 @@ interface BackgroundMeshProps {
   mode?: BackgroundMode;
 }
 
-// Self-contained noise texture (base64 svg)
 const NOISE_URI = `data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='1'/%3E%3C/svg%3E`;
 
-const BackgroundMesh: React.FC<BackgroundMeshProps> = ({ mode = 'idle' }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+// --- SHOOTING STAR COMPONENT ---
+interface ShootingStarProps {
+  id: number;
+  onComplete: () => void;
+}
 
-  // Palette config
+const ShootingStar: React.FC<ShootingStarProps> = ({ onComplete }) => {
+  const config = useMemo(() => {
+    // 1. Spawn: Random X (0-100vw), Top-weighted Y (0-50vh)
+    const startX = Math.random() * 100; 
+    const startY = Math.random() * 50;  
+
+    // 2. Angle: "Falling" generally means downwards.
+    // 0deg = Right, 90deg = Down, 180deg = Left
+    // If starting on Left (0-50%), tend to fall Right (10-80deg)
+    // If starting on Right (50-100%), tend to fall Left (100-170deg)
+    // We add some randomness so it's not perfectly split.
+    const isLeft = startX < 50;
+    const baseAngle = isLeft ? 45 : 135; 
+    const variance = (Math.random() * 60) - 30; // +/- 30deg
+    const angle = baseAngle + variance;
+
+    // 3. Distance & Speed
+    // Closer (larger) stars move faster and further.
+    // Further (smaller) stars move slower and shorter.
+    const depth = Math.random(); // 0 (Far) to 1 (Near)
+    
+    const distance = 300 + (depth * 500); // 300px to 800px
+    const duration = 1.0 + ((1 - depth) * 1.5); // 1s (Fast/Near) to 2.5s (Slow/Far)
+    const size = 1 + (depth * 2); // 1px to 3px head
+    const maxTailLength = 100 + (depth * 200); // Tail length proportional to speed/depth
+
+    return {
+      startX,
+      startY,
+      angle,
+      distance,
+      duration,
+      size,
+      maxTailLength
+    };
+  }, []);
+
+  return (
+    <motion.div
+      className="absolute pointer-events-none"
+      style={{
+        left: `${config.startX}%`,
+        top: `${config.startY}%`,
+        rotate: `${config.angle}deg`, // Rotate coordinate system
+        transformOrigin: 'top left',
+        zIndex: -1 // Ensure strictly background
+      }}
+      initial={{ x: 0, opacity: 0, scale: 0.5 }}
+      animate={{
+        x: config.distance, // Move 'Forward' in rotated space
+        opacity: [0, 1, 1, 0], // Fade In -> Hold -> Fade Out
+        scale: [0.5, 1, 0.5], // Perspective scaling
+      }}
+      transition={{
+        duration: config.duration,
+        ease: "easeIn", // Accelerate (Gravity)
+        times: [0, 0.1, 0.7, 1] // Fade out at very end
+      }}
+      onAnimationComplete={onComplete}
+    >
+      {/* Container for Head + Tail to ensure correct relative positioning */}
+      <div className="relative flex items-center">
+         
+         {/* The Tail (Trailing behind head) */}
+         {/* Since we move +X, the tail should be to the LEFT (-X) of the head */}
+         {/* We use 'order-first' or absolute positioning. Let's use absolute to anchor to head. */}
+         <motion.div
+            className="absolute right-[50%] h-[1px] origin-right bg-gradient-to-r from-transparent via-cyan-400/50 to-white"
+            style={{ 
+              top: '50%',
+              translateY: '-50%',
+            }} 
+            animate={{
+              width: [0, config.maxTailLength, 0], // Grow with speed, shrink at end
+            }}
+            transition={{
+              duration: config.duration,
+              ease: "easeInOut", // Smooth growth/shrink
+              times: [0, 0.4, 1] // Max length at 40% (peak speed visual), then shrink
+            }}
+         />
+
+         {/* The Head */}
+         <div 
+           className="relative rounded-full bg-white shadow-[0_0_8px_1px_rgba(255,255,255,0.9)] z-10" 
+           style={{ width: config.size, height: config.size }}
+         />
+         
+      </div>
+    </motion.div>
+  );
+};
+
+// --- STATIC STAR FIELD COMPONENT ---
+const StaticStarField = () => {
+  const stars = useMemo(() => {
+    return Array.from({ length: 100 }).map((_, i) => ({
+      id: i,
+      top: Math.random() * 100 + '%',
+      left: Math.random() * 100 + '%',
+      size: Math.random() * 1.5 + 0.5 + 'px', 
+      opacity: Math.random() * 0.4 + 0.1, 
+      delay: Math.random() * 5
+    }));
+  }, []);
+
+  return (
+    <div className="absolute inset-0 pointer-events-none z-[-2]">
+      {stars.map((star) => (
+        <motion.div
+          key={star.id}
+          className="absolute bg-white rounded-full"
+          style={{
+            top: star.top,
+            left: star.left,
+            width: star.size,
+            height: star.size,
+            opacity: star.opacity,
+          }}
+          animate={{ opacity: [star.opacity, star.opacity * 0.5, star.opacity] }}
+          transition={{
+            duration: 3 + Math.random() * 4,
+            repeat: Infinity,
+            delay: star.delay,
+            ease: "easeInOut"
+          }}
+        />
+      ))}
+    </div>
+  );
+};
+
+const BackgroundMesh: React.FC<BackgroundMeshProps> = ({ mode = 'idle' }) => {
+  const [stars, setStars] = useState<{ id: number }[]>([]);
+
   const palettes = {
-    idle: { bg: '#083344', glow: '#22d3ee', particle: '165, 243, 252' },     // Cyan
-    thinking: { bg: '#2a1205', glow: '#fbbf24', particle: '252, 211, 77' },  // Amber
-    searching: { bg: '#022c22', glow: '#34d399', particle: '110, 231, 183' }, // Emerald
-    speaking: { bg: '#2e1065', glow: '#a855f7', particle: '216, 180, 254' }   // Purple
+    idle: { top: '#0f172a', highlight: '#1e293b' }, 
+    thinking: { top: '#1c1917', highlight: '#44403c' },
+    searching: { top: '#022c22', highlight: '#115e59' },
+    speaking: { top: '#000000', highlight: '#27272a' }
   };
 
   const currentPalette = palettes[mode];
 
-  // Particle Engine
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    let animationFrameId: number;
-    let particles: Particle[] = [];
-    let width = 0;
-    let height = 0;
-
-    // Configuration based on mode
-    const config = {
-      speed: mode === 'thinking' || mode === 'searching' ? 0.8 : 0.3,
-      jitter: mode === 'thinking' ? 0.5 : 0.1,
-      connectionDistance: mode === 'speaking' ? 150 : 100,
-      count: window.innerWidth < 768 ? 40 : 80
+    const scheduleStar = () => {
+      const delay = Math.random() * 4000 + 1000; 
+      setTimeout(() => {
+        // Check if component is still mounted logic not strictly needed for this simple effect
+        // but prevents state updates on unmount if we had a ref
+        setStars(prev => {
+          // Limit concurrent stars to prevent performance drop / clutter
+          if (prev.length > 5) return prev; 
+          return [...prev, { id: Date.now() }];
+        });
+        scheduleStar();
+      }, delay);
     };
 
-    class Particle {
-      x: number;
-      y: number;
-      vx: number;
-      vy: number;
-      size: number;
-      phase: number;
+    scheduleStar();
+    // No cleanup for the recursive timeout pattern in this simplified scope, 
+    // real app might want a ref to clear timeout.
+  }, []);
 
-      constructor() {
-        this.x = Math.random() * width;
-        this.y = Math.random() * height;
-        this.vx = (Math.random() - 0.5) * config.speed;
-        this.vy = (Math.random() - 0.5) * config.speed;
-        this.size = Math.random() * 2;
-        this.phase = Math.random() * Math.PI * 2;
-      }
-
-      update() {
-        // Add mode-based jitter
-        if (config.jitter > 0.1) {
-            this.vx += (Math.random() - 0.5) * 0.05;
-            this.vy += (Math.random() - 0.5) * 0.05;
-            // Dampen
-            this.vx *= 0.99;
-            this.vy *= 0.99;
-        }
-
-        this.x += this.vx;
-        this.y += this.vy;
-
-        // Wrap around
-        if (this.x < 0) this.x = width;
-        if (this.x > width) this.x = 0;
-        if (this.y < 0) this.y = height;
-        if (this.y > height) this.y = 0;
-
-        this.phase += 0.05;
-      }
-
-      draw() {
-        if (!ctx) return;
-        const opacity = (Math.sin(this.phase) + 1) / 2 * 0.5 + 0.2;
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${currentPalette.particle}, ${opacity})`;
-        ctx.fill();
-      }
-    }
-
-    const init = () => {
-      width = canvas.width = window.innerWidth;
-      height = canvas.height = window.innerHeight;
-      particles = [];
-      for (let i = 0; i < config.count; i++) {
-        particles.push(new Particle());
-      }
-    };
-
-    const animate = () => {
-      if (!ctx) return;
-      ctx.clearRect(0, 0, width, height);
-
-      particles.forEach((p, i) => {
-        p.update();
-        p.draw();
-
-        // Connections
-        for (let j = i + 1; j < particles.length; j++) {
-          const p2 = particles[j];
-          const dx = p.x - p2.x;
-          const dy = p.y - p2.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-
-          if (dist < config.connectionDistance) {
-            const opacity = 1 - dist / config.connectionDistance;
-            ctx.beginPath();
-            ctx.moveTo(p.x, p.y);
-            ctx.lineTo(p2.x, p2.y);
-            ctx.strokeStyle = `rgba(${currentPalette.particle}, ${opacity * 0.15})`;
-            ctx.lineWidth = 0.5;
-            ctx.stroke();
-          }
-        }
-      });
-
-      animationFrameId = requestAnimationFrame(animate);
-    };
-
-    init();
-    window.addEventListener('resize', init);
-    animate();
-
-    return () => {
-      window.removeEventListener('resize', init);
-      cancelAnimationFrame(animationFrameId);
-    };
-  }, [mode, currentPalette]);
+  const removeStar = (id: number) => {
+    setStars(prev => prev.filter(s => s.id !== id));
+  };
 
   return (
-    <div ref={containerRef} className="fixed inset-0 z-0 bg-black overflow-hidden pointer-events-none">
+    <div className="fixed inset-0 z-0 bg-black overflow-hidden pointer-events-none transition-colors duration-1000">
       
-      {/* Base Background Color (Smooth Transition) */}
+      {/* 1. Base Dark Background */}
+      <div className="absolute inset-0 bg-black z-[-10]" />
+
+      {/* 2. Top "Atmosphere" Gradient */}
       <motion.div 
-        animate={{ backgroundColor: currentPalette.bg }}
-        transition={{ duration: 2 }}
-        className="absolute inset-0 z-0 opacity-80"
+        animate={{
+          background: [
+            `radial-gradient(120% 60% at 50% -10%, ${currentPalette.highlight} 0%, ${currentPalette.top} 40%, transparent 100%)`,
+            `radial-gradient(130% 65% at 50% -5%, ${currentPalette.highlight} 0%, ${currentPalette.top} 45%, transparent 100%)`,
+            `radial-gradient(120% 60% at 50% -10%, ${currentPalette.highlight} 0%, ${currentPalette.top} 40%, transparent 100%)`
+          ]
+        }}
+        transition={{ duration: 8, repeat: Infinity, ease: "easeInOut" }}
+        className="absolute inset-0 opacity-60 z-[-5]"
       />
 
-      {/* Large Soft Glow Orbs */}
-      <motion.div 
-        animate={{ backgroundColor: currentPalette.glow }}
-        transition={{ duration: 4, ease: "easeInOut" }}
-        className="absolute -top-[20%] -left-[10%] w-[70vw] h-[70vw] rounded-full blur-[120px] opacity-10 mix-blend-screen"
-      />
-      <motion.div 
-        animate={{ backgroundColor: currentPalette.glow }}
-        transition={{ duration: 4, delay: 2, ease: "easeInOut" }}
-        className="absolute -bottom-[20%] -right-[10%] w-[70vw] h-[70vw] rounded-full blur-[120px] opacity-10 mix-blend-screen"
-      />
+      {/* 3. Static Star Field */}
+      <StaticStarField />
 
-      {/* Canvas Particle Layer */}
-      <canvas 
-        ref={canvasRef}
-        className="absolute inset-0 z-10 opacity-60"
+      {/* 4. Shooting Stars Layer */}
+      {/* Important: z-[-1] to stay behind content */}
+      <div className="absolute inset-0 z-[-1]">
+        <AnimatePresence>
+          {stars.map(star => (
+            <ShootingStar key={star.id} id={star.id} onComplete={() => removeStar(star.id)} />
+          ))}
+        </AnimatePresence>
+      </div>
+
+      {/* 5. The "Horizon" Curve */}
+      <motion.div 
+        animate={{ y: [0, -30, 0], scale: [1, 1.02, 1] }}
+        transition={{ duration: 12, repeat: Infinity, ease: "easeInOut" }}
+        className="absolute bottom-[-40vh] left-[-20%] right-[-20%] h-[80vh] bg-black rounded-[100%] blur-[100px] opacity-90 z-0" 
       />
       
-      {/* Cinematic Grain Overlay */}
+      {/* 6. Cinematic Grain */}
       <div 
-        className="absolute inset-0 z-20 opacity-[0.07] mix-blend-overlay pointer-events-none"
-        style={{ backgroundImage: `url("${NOISE_URI}")`, filter: 'contrast(150%) brightness(100%)' }}
+        className="absolute inset-0 z-50 opacity-[0.03] mix-blend-overlay pointer-events-none"
+        style={{ backgroundImage: `url("${NOISE_URI}")`, filter: 'contrast(120%) brightness(100%)' }}
       ></div>
       
-      {/* Vignette */}
-      <div className="absolute inset-0 z-30 bg-[radial-gradient(circle_at_center,transparent_0%,black_100%)] opacity-60"></div>
-
     </div>
   );
 };

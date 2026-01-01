@@ -40,8 +40,7 @@ const HolographicStepper: React.FC<HolographicStepperProps> = ({ status }) => {
         {steps.map((step, index) => {
           const isActive = index === currentStepIndex;
           const isCompleted = index < currentStepIndex;
-          const isPending = index > currentStepIndex;
-
+          
           return (
             <motion.div 
               key={step.id}
@@ -69,25 +68,25 @@ const HolographicStepper: React.FC<HolographicStepperProps> = ({ status }) => {
                   ) : isActive ? (
                     <motion.div 
                       key="active"
-                      className="w-6 h-6 rounded-full border border-cyan-400 flex items-center justify-center relative"
+                      className="w-6 h-6 rounded-full border border-zinc-300 flex items-center justify-center relative"
                     >
-                      <div className="w-2 h-2 bg-cyan-400 rounded-full animate-pulse" />
-                      <div className="absolute inset-0 bg-cyan-400/20 rounded-full animate-ping" />
+                      <div className="w-2 h-2 bg-white rounded-full animate-pulse shadow-[0_0_10px_rgba(255,255,255,0.8)]" />
+                      <div className="absolute inset-0 bg-white/10 rounded-full animate-ping" />
                     </motion.div>
                   ) : (
-                    <div className="w-6 h-6 rounded-full border border-white/10 bg-black/50" />
+                    <div className="w-6 h-6 rounded-full border border-white/5 bg-white/5" />
                   )}
                 </AnimatePresence>
               </div>
 
               {/* Label */}
-              <div className={`${isActive ? 'text-cyan-300 font-semibold' : isCompleted ? 'text-emerald-500/70' : 'text-zinc-600'}`}>
+              <div className={`${isActive ? 'text-zinc-200 font-semibold' : isCompleted ? 'text-emerald-500/70' : 'text-zinc-600'}`}>
                 <span className="text-sm tracking-widest uppercase">{step.label}</span>
                 {isActive && (
                   <motion.span 
                     initial={{ opacity: 0 }} 
                     animate={{ opacity: 1 }} 
-                    className="ml-3 text-xs text-cyan-500/50 font-mono"
+                    className="ml-3 text-xs text-zinc-400 font-mono"
                   >
                     // {status.split('...')[0]}...
                   </motion.span>
