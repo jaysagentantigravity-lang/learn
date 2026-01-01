@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { AnimatePresence } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
 import BackgroundMesh, { BackgroundMode } from './components/BackgroundMesh';
 import InputBar from './components/InputBar';
 import MessageList from './components/MessageList';
@@ -16,6 +16,10 @@ function App() {
   const [thinkingStatus, setThinkingStatus] = useState<string>("Processing...");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<UserSettings>({ voiceName: 'Kore' });
+  
+  // User Menu State
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
 
   const [activeOptions, setActiveOptions] = useState<ProcessingOptions>({ useThinking: false, useSearch: true });
 
@@ -47,6 +51,17 @@ function App() {
   const durationRef = useRef<number>(0);
   const progressLoopRef = useRef<number>(0);
   const prefetchTriggeredRef = useRef<boolean>(false);
+
+  // Click outside listener for user menu
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setIsUserMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Initialize Audio Context
   const initAudio = () => {
@@ -435,20 +450,66 @@ function App() {
      visualMode = 'speaking';
   }
 
+  const handleSettingsClick = () => {
+    setIsUserMenuOpen(false);
+    setIsSettingsOpen(true);
+  };
+
+  const handleSubscriptionClick = () => {
+    setIsUserMenuOpen(false);
+    // Mock subscription action
+    alert("Subscription management would open here.");
+  };
+
+  const handleLogoutClick = () => {
+    setIsUserMenuOpen(false);
+    // Mock logout action
+    if(window.confirm("Are you sure you want to log out?")) {
+        window.location.reload();
+    }
+  };
+
   return (
     <div className="relative h-screen w-full flex overflow-hidden font-sans bg-black">
       
       {/* Background */}
       <BackgroundMesh mode={visualMode} />
 
-      {/* Settings Button */}
-      <div className="absolute top-4 right-4 z-40">
+      {/* User Avatar & Dropdown */}
+      <div className="absolute top-5 right-6 z-50" ref={userMenuRef}>
         <button 
-          onClick={() => setIsSettingsOpen(true)}
-          className="p-3 rounded-full bg-white/5 backdrop-blur-md border border-white/10 text-zinc-400 hover:text-white hover:bg-white/10 transition-all hover:rotate-90 duration-500 shadow-lg"
+          onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+          className="relative w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 transition-all flex items-center justify-center overflow-hidden shadow-lg group"
         >
-          <i className="fa-solid fa-gear text-lg"></i>
+          {/* Mock Avatar Gradient */}
+          <div className="absolute inset-0 bg-gradient-to-tr from-cyan-900 to-purple-900 opacity-80 group-hover:opacity-100 transition-opacity"></div>
+          <span className="relative text-xs font-bold text-white z-10">JS</span>
         </button>
+
+        <AnimatePresence>
+          {isUserMenuOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.95 }}
+              transition={{ duration: 0.2 }}
+              className="absolute right-0 mt-3 w-48 bg-[#0a0a0a] border border-white/10 rounded-2xl shadow-2xl overflow-hidden backdrop-blur-xl"
+            >
+              <div className="py-1">
+                <button onClick={handleSettingsClick} className="w-full text-left px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-3 transition-colors">
+                  <i className="fa-solid fa-gear text-xs w-4"></i> Settings
+                </button>
+                <button onClick={handleSubscriptionClick} className="w-full text-left px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-3 transition-colors">
+                  <i className="fa-solid fa-credit-card text-xs w-4"></i> Subscription
+                </button>
+                <div className="h-px bg-white/5 my-1 mx-2"></div>
+                <button onClick={handleLogoutClick} className="w-full text-left px-4 py-3 text-sm text-red-400 hover:text-red-300 hover:bg-red-500/10 flex items-center gap-3 transition-colors">
+                  <i className="fa-solid fa-right-from-bracket text-xs w-4"></i> Log out
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       <SettingsModal 
@@ -485,7 +546,7 @@ function App() {
              </div>
              
              {/* Disclaimer */}
-             <div className="mt-4 text-[10px] text-zinc-600 font-mono tracking-tight text-center px-4 opacity-60">
+             <div className="mt-4 text-[10px] text-zinc-600 font-sans tracking-tight text-center px-4 opacity-60">
                 Lumina may display inaccurate info, including about people, so double-check its responses.
              </div>
           </div>

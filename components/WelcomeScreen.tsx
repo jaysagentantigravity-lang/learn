@@ -200,7 +200,7 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onSuggestionClick }) => {
         {/* Container for Title + Greeting + Location (Grouped Tightly) */}
         <div className="relative flex flex-col items-center justify-center w-full">
            
-           {/* 1. Lumina Title - Aluminum Gradient & Angle */}
+           {/* 1. Lumina Title - Aluminum Gradient & Angle - Nudged down by adding mt-2 */}
            <motion.h1
               initial={{ filter: "blur(15px)", opacity: 0, y: 30 }}
               animate={isShifted 
@@ -213,7 +213,7 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onSuggestionClick }) => {
                   }
               }
               transition={{ duration: 1.2, ease: "easeInOut" }}
-              className="text-6xl md:text-8xl font-thin tracking-tighter leading-none bg-gradient-to-br from-white via-zinc-300 to-zinc-600 text-transparent bg-clip-text drop-shadow-[0_2px_15px_rgba(255,255,255,0.15)] origin-center z-20 pb-2"
+              className="mt-2 text-6xl md:text-8xl font-thin tracking-tighter leading-none bg-gradient-to-br from-white via-zinc-300 to-zinc-600 text-transparent bg-clip-text drop-shadow-[0_2px_15px_rgba(255,255,255,0.15)] origin-center z-20 pb-2"
             >
               Lumina
             </motion.h1>
@@ -229,8 +229,8 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onSuggestionClick }) => {
                   {greeting}
                </h2>
 
-               {/* 3. Location - Title Case, no uppercase */}
-               <div className="flex items-center text-xs text-zinc-500 mt-3 font-mono tracking-widest opacity-70">
+               {/* 3. Location - Title Case, no uppercase - Normal font, nudged down */}
+               <div className="flex items-center text-xs text-zinc-500 mt-4 font-sans tracking-widest opacity-70">
                  <i className="fa-solid fa-location-dot mr-1.5 text-cyan-500/50"></i> {locationName}
                </div>
             </motion.div>
@@ -265,15 +265,15 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onSuggestionClick }) => {
 
       {/* Row B: Slim Presets (Chips) */}
       <div className="w-full max-w-4xl overflow-x-auto scrollbar-hide pb-4">
-        {/* Container with fixed min-height to reserve space and prevent jumps */}
-        <div className="flex flex-nowrap md:justify-center gap-4 min-w-max px-2 h-[52px] items-center">
+        {/* Container with fixed min-height to reserve space and prevent jumps - height lowered to 44px */}
+        <div className="flex flex-nowrap md:justify-center gap-4 min-w-max px-2 h-[44px] items-center">
           {loading ? (
-             // SKELETON CHIPS: Match Height to Real Chips (approx 46px)
+             // SKELETON CHIPS: Match Height to Real Chips
              [...Array(4)].map((_, idx) => (
                <motion.div
                   key={`chip-skel-${idx}`}
                   initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-                  className="h-[46px] w-32 rounded-full bg-white/5 border border-white/5 relative overflow-hidden"
+                  className="h-[38px] w-32 rounded-full bg-white/5 border border-white/5 relative overflow-hidden"
                >
                   <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent animate-[shimmer_1.5s_infinite] -translate-x-full" />
                </motion.div>
@@ -294,7 +294,7 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onSuggestionClick }) => {
                  <BorderBeam className="rounded-full" borderWidth={1}>
                    <button
                      onClick={() => onSuggestionClick(preset.text, { useThinking: false, useSearch: true })}
-                     className="group flex items-center gap-3 px-6 py-3 transition-all w-full h-full hover:bg-white/5"
+                     className="group flex items-center gap-3 px-6 py-2 transition-all w-full h-full bg-white/5 hover:bg-white/10 backdrop-blur-md"
                    >
                      <i className={`fa-solid ${preset.icon || 'fa-magnifying-glass'} text-zinc-500 group-hover:text-cyan-300 text-sm group-hover:scale-110 transition-transform`}></i>
                      <span className="text-sm font-medium text-zinc-300 group-hover:text-white whitespace-nowrap tracking-wide">{preset.text}</span>

@@ -175,7 +175,7 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
     >
        {/* Main Input Container - Wrapped in BorderBeam for Continuous Effect */}
        {/* BorderBeam provides the glass background now */}
-       <div className="rounded-[40px] shadow-2xl">
+       <div className="rounded-[40px] shadow-2xl backdrop-blur-xl bg-black/40">
          <BorderBeam 
             alwaysOn={true} 
             className="rounded-[40px]" 

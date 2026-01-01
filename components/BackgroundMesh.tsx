@@ -82,8 +82,8 @@ const BackgroundMesh: React.FC<BackgroundMeshProps> = ({ mode = 'idle' }) => {
 
       {/* 4. The "Horizon" Curve */}
       <motion.div 
-        animate={{ y: [0, -30, 0], scale: [1, 1.02, 1] }}
-        transition={{ duration: 12, repeat: Infinity, ease: "easeInOut" }}
+        animate={{ y: [0, 60, 0], scale: [1, 1.1, 1] }}
+        transition={{ duration: 25, repeat: Infinity, ease: "easeInOut" }}
         className="absolute bottom-[-40vh] left-[-20%] right-[-20%] h-[80vh] bg-black rounded-[100%] blur-[100px] opacity-90 z-0" 
       />
       
