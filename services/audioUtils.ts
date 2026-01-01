@@ -48,7 +48,7 @@ export const splitTextIntoChunks = (text: string): string[] => {
   const clean = text
     .replace(/!\[.*?\]/g, "")
     .replace(/\[DIAGRAM\][\s\S]*?\[\/DIAGRAM\]/g, "")
-    .replace(/\[IMAGE\][\s\S]*?\[\/IMAGE\]/g, "")
+    .replace(/\[\[GENERATE_IMAGE:.*?\]\]/g, "")
     .replace(/[#*`]/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -93,42 +93,75 @@ export const splitTextIntoChunks = (text: string): string[] => {
 
 // --- Procedural System Sounds ---
 
-export const playSystemSound = (type: 'thinking' | 'ready', ctx: AudioContext) => {
+let thrumOsc: OscillatorNode | null = null;
+let thrumGain: GainNode | null = null;
+
+export const playSystemSound = (type: 'tick' | 'thrum_start' | 'thrum_stop' | 'ping', ctx: AudioContext) => {
   if (ctx.state === 'suspended') ctx.resume();
   
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-
   const now = ctx.currentTime;
 
-  if (type === 'thinking') {
-    // Subtle breathe: 200Hz - 220Hz
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(200, now);
-    osc.frequency.linearRampToValueAtTime(220, now + 1.5);
-    osc.frequency.linearRampToValueAtTime(200, now + 3.0);
+  if (type === 'tick') {
+    // Sharp, digital tick for stepper
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
     
-    gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(0.05, now + 1.5); // Very quiet
-    gain.gain.linearRampToValueAtTime(0, now + 3.0);
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(800, now);
+    osc.frequency.exponentialRampToValueAtTime(100, now + 0.05);
+    
+    gain.gain.setValueAtTime(0.05, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
     
     osc.start(now);
-    osc.stop(now + 3.0);
-  } 
-  else if (type === 'ready') {
-    // Glassy Chime: 800Hz -> 1200Hz fast sweep
+    osc.stop(now + 0.06);
+  }
+  else if (type === 'thrum_start') {
+    // 100Hz Sine Loop (Thinking/Loading)
+    if (thrumOsc) return; // Already playing
+    
+    thrumOsc = ctx.createOscillator();
+    thrumGain = ctx.createGain();
+    
+    thrumOsc.type = 'sine';
+    thrumOsc.frequency.setValueAtTime(100, now);
+    
+    // LFO effect logic would be complex here, keeping it simple low hum
+    thrumGain.gain.setValueAtTime(0, now);
+    thrumGain.gain.linearRampToValueAtTime(0.05, now + 0.5);
+    
+    thrumOsc.connect(thrumGain);
+    thrumGain.connect(ctx.destination);
+    thrumOsc.start(now);
+  }
+  else if (type === 'thrum_stop') {
+    if (thrumOsc && thrumGain) {
+      thrumGain.gain.cancelScheduledValues(now);
+      thrumGain.gain.linearRampToValueAtTime(0, now + 0.2);
+      thrumOsc.stop(now + 0.2);
+      thrumOsc = null;
+      thrumGain = null;
+    }
+  }
+  else if (type === 'ping') {
+    // Glassy Ready Sound (1500Hz Sine Decay)
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(800, now);
-    osc.frequency.exponentialRampToValueAtTime(1200, now + 0.1);
+    osc.frequency.setValueAtTime(1200, now);
+    osc.frequency.exponentialRampToValueAtTime(1800, now + 0.1);
     
     gain.gain.setValueAtTime(0, now);
     gain.gain.linearRampToValueAtTime(0.1, now + 0.05);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.8);
     
     osc.start(now);
-    osc.stop(now + 0.6);
+    osc.stop(now + 0.8);
   }
 };

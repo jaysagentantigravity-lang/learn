@@ -7,7 +7,7 @@ import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import VisualCard from './VisualCard';
 import MermaidDiagram from './MermaidDiagram';
 import ClarificationCard from './ClarificationCard';
-import ThinkingIndicator from './ThinkingIndicator';
+import HolographicStepper from './HolographicStepper';
 
 interface MessageListProps {
   messages: Message[];
@@ -39,12 +39,22 @@ const CopyButton: React.FC<{ text: string }> = ({ text }) => {
 };
 
 const MessageList: React.FC<MessageListProps> = ({ messages, onPlayAudio, onClarificationSubmit, isThinking, thinkingStatus }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const [activeDropdownId, setActiveDropdownId] = useState<string | null>(null);
 
-  // Auto-scroll when new text arrives
+  // Smart Auto-scroll: Only scroll if user is near bottom
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const container = containerRef.current;
+    if (!container) return;
+
+    // Threshold: 150px from bottom
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+    
+    // Always scroll on new user message (length change) or if already near bottom
+    if (isNearBottom || messages[messages.length - 1]?.role === 'user') {
+       bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages.length, messages[messages.length - 1]?.text, isThinking, thinkingStatus]);
 
   // Click outside to close dropdown
@@ -57,8 +67,7 @@ const MessageList: React.FC<MessageListProps> = ({ messages, onPlayAudio, onClar
   const renderContent = (text: string) => {
     if (!text) return null;
     
-    // Regex matches markdown image syntax ![Prompt](ignored) OR specific tags
-    const regex = /!\[(.*?)\]\(.*?\)|\[DIAGRAM\]([\s\S]*?)\[\/DIAGRAM\]/g;
+    const regex = /!\[([\s\S]*?)\]\([\s\S]*?\)|\[DIAGRAM\]([\s\S]*?)\[\/DIAGRAM\]|\[\[GENERATE_IMAGE:\s*["']?([\s\S]*?)["']?\]\]/g;
     const parts = [];
     let lastIndex = 0;
     let match;
@@ -67,7 +76,10 @@ const MessageList: React.FC<MessageListProps> = ({ messages, onPlayAudio, onClar
       if (match.index > lastIndex) {
         parts.push({ type: 'text', content: text.substring(lastIndex, match.index) });
       }
-      if (match[2]) {
+      
+      if (match[3]) {
+        parts.push({ type: 'image', content: match[3].trim() });
+      } else if (match[2]) {
         parts.push({ type: 'diagram', content: match[2].trim() });
       } else if (match[1]) {
         parts.push({ type: 'image', content: match[1].trim() });
@@ -141,124 +153,135 @@ const MessageList: React.FC<MessageListProps> = ({ messages, onPlayAudio, onClar
   };
 
   return (
-    <div className="flex-1 w-full flex flex-col items-center overflow-y-auto scrollbar-hide pb-32">
+    <div ref={containerRef} className="flex-1 w-full flex flex-col items-center overflow-y-auto pb-32" style={{ scrollBehavior: 'smooth', overflowAnchor: 'none' }}>
       <div className="w-full max-w-5xl px-4 md:px-8 py-10 flex flex-col gap-12">
         <AnimatePresence mode='popLayout'>
-          {messages.map((msg) => (
-            <motion.div
-              key={msg.id}
-              initial={{ opacity: 0, y: 40 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              className="w-full"
-            >
-              {msg.role === 'user' ? (
-                <div className="flex justify-end mb-8">
-                  <div className="bg-white/5 backdrop-blur-md px-8 py-5 rounded-3xl rounded-br-none border border-white/10 max-w-xl text-lg text-white/90 shadow-lg">
-                     {msg.image && <img src={`data:image/jpeg;base64,${msg.image}`} className="mb-4 rounded-xl max-h-40 border border-white/10" />}
-                     {msg.text}
+          {messages.map((msg, index) => {
+            const isLastMessage = index === messages.length - 1;
+            
+            // "The Curtain" Logic:
+            // If it's the last message (Model), AND we are thinking, AND there is no text yet...
+            // Hide the bubble. Show Stepper instead.
+            if (msg.role === 'model' && isLastMessage && isThinking && !msg.text) {
+              return null;
+            }
+
+            return (
+              <motion.div
+                key={msg.id}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.6, ease: "easeOut" }} // Slow reveal
+                className="w-full"
+              >
+                {msg.role === 'user' ? (
+                  <div className="flex justify-end mb-8">
+                    <div className="bg-white/5 backdrop-blur-md px-8 py-5 rounded-3xl rounded-br-none border border-white/10 max-w-xl text-lg text-white/90 shadow-lg">
+                       {msg.image && <img src={`data:image/jpeg;base64,${msg.image}`} className="mb-4 rounded-xl max-h-40 border border-white/10" />}
+                       {msg.text}
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <div className="bg-black/60 backdrop-blur-xl border border-white/10 rounded-3xl p-8 md:p-16 shadow-2xl relative overflow-hidden group">
-                  
-                  {msg.clarification ? (
-                    <ClarificationCard 
-                      data={msg.clarification} 
-                      onSubmit={(opt) => onClarificationSubmit(msg.id, opt)} 
-                    />
-                  ) : (
-                    <>
-                      <div className="relative z-10 min-h-[60px]">
-                        {renderContent(msg.text)}
-                        {/* Cursor for streaming if this is the last message and still thinking */}
-                        {isThinking && msg.id === messages[messages.length - 1].id && !msg.text && (
-                          <div className="h-6 w-2 bg-cyan-400 animate-pulse inline-block" />
-                        )}
-                      </div>
-
-                      {/* Only show footer controls if text is present */}
-                      {msg.text && (
-                        <div className="mt-16 pt-8 border-t border-white/5 flex flex-wrap items-center justify-between gap-6">
-                          
-                          <div className="flex flex-wrap gap-3">
-                            <AnimatePresence mode="popLayout">
-                              {msg.groundingSources?.map((s, i) => (
-                                <motion.a 
-                                  key={s.url || i} 
-                                  initial={{ opacity: 0, scale: 0.9 }}
-                                  animate={{ opacity: 1, scale: 1 }}
-                                  exit={{ opacity: 0, scale: 0.9 }}
-                                  transition={{ duration: 0.2, delay: i * 0.05 }}
-                                  href={s.url} 
-                                  target="_blank" 
-                                  className="text-xs text-zinc-500 hover:text-cyan-400 flex items-center gap-2 transition-colors px-3 py-1.5 rounded-full hover:bg-white/5 border border-transparent hover:border-white/10"
-                                >
-                                  <i className="fa-solid fa-earth-americas text-xs"></i> {s.title}
-                                </motion.a>
-                              ))}
-                            </AnimatePresence>
-                          </div>
-
-                          <div className="relative">
-                            <button 
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setActiveDropdownId(activeDropdownId === msg.id ? null : msg.id);
-                              }}
-                              className="flex items-center gap-3 px-6 py-3 rounded-full bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white transition-all border border-white/5 hover:border-cyan-500/30 group/btn"
-                            >
-                              <i className="fa-solid fa-volume-high text-lg group-hover/btn:text-cyan-400 transition-colors"></i>
-                              <span className="text-xs font-bold uppercase tracking-widest">Listen</span>
-                            </button>
-
-                            <AnimatePresence>
-                              {activeDropdownId === msg.id && (
-                                <motion.div
-                                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                                  className="absolute bottom-full right-0 mb-2 w-48 bg-[#0a0a0a] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-20"
-                                >
-                                  <button
-                                    onClick={() => onPlayAudio(msg, 'verbatim')}
-                                    className="w-full text-left px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-3"
-                                  >
-                                    <i className="fa-solid fa-book-open text-cyan-400 text-sm"></i>
-                                    Read Article
-                                  </button>
-                                  <button
-                                    onClick={() => onPlayAudio(msg, 'story')}
-                                    className="w-full text-left px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-3 border-t border-white/5"
-                                  >
-                                    <i className="fa-solid fa-microphone text-purple-400 text-sm"></i>
-                                    Explain it to me
-                                  </button>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-                          </div>
-
+                ) : (
+                  <div className="bg-black/60 backdrop-blur-xl border border-white/10 rounded-3xl p-8 md:p-16 shadow-2xl relative overflow-hidden group">
+                    
+                    {msg.clarification ? (
+                      <ClarificationCard 
+                        data={msg.clarification} 
+                        onSubmit={(opt) => onClarificationSubmit(msg.id, opt)} 
+                      />
+                    ) : (
+                      <>
+                        <div className="relative z-10 min-h-[60px]">
+                          {renderContent(msg.text)}
+                          {/* Cursor for streaming if this is the last message and still thinking */}
+                          {isThinking && isLastMessage && (
+                            <div className="h-6 w-2 bg-cyan-400 animate-pulse inline-block" />
+                          )}
                         </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
-            </motion.div>
-          ))}
+
+                        {/* Footer Controls */}
+                        {msg.text && (
+                          <div className="mt-16 pt-8 border-t border-white/5 flex flex-wrap items-center justify-between gap-6">
+                            
+                            <div className="flex flex-wrap gap-3">
+                              <AnimatePresence mode="popLayout">
+                                {msg.groundingSources?.map((s, i) => (
+                                  <motion.a 
+                                    key={s.url || i} 
+                                    initial={{ opacity: 0, scale: 0.9 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    exit={{ opacity: 0, scale: 0.9 }}
+                                    transition={{ duration: 0.2, delay: i * 0.05 }}
+                                    href={s.url} 
+                                    target="_blank" 
+                                    className="text-xs text-zinc-500 hover:text-cyan-400 flex items-center gap-2 transition-colors px-3 py-1.5 rounded-full hover:bg-white/5 border border-transparent hover:border-white/10"
+                                  >
+                                    <i className="fa-solid fa-earth-americas text-xs"></i> {s.title}
+                                  </motion.a>
+                                ))}
+                              </AnimatePresence>
+                            </div>
+
+                            <div className="relative">
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveDropdownId(activeDropdownId === msg.id ? null : msg.id);
+                                }}
+                                className="flex items-center gap-3 px-6 py-3 rounded-full bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white transition-all border border-white/5 hover:border-cyan-500/30 group/btn"
+                              >
+                                <i className="fa-solid fa-volume-high text-lg group-hover/btn:text-cyan-400 transition-colors"></i>
+                                <span className="text-xs font-bold uppercase tracking-widest">Listen</span>
+                              </button>
+
+                              <AnimatePresence>
+                                {activeDropdownId === msg.id && (
+                                  <motion.div
+                                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                                    exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                                    className="absolute bottom-full right-0 mb-2 w-48 bg-[#0a0a0a] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-20"
+                                  >
+                                    <button
+                                      onClick={() => onPlayAudio(msg, 'verbatim')}
+                                      className="w-full text-left px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-3"
+                                    >
+                                      <i className="fa-solid fa-book-open text-cyan-400 text-sm"></i>
+                                      Read Article
+                                    </button>
+                                    <button
+                                      onClick={() => onPlayAudio(msg, 'story')}
+                                      className="w-full text-left px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-3 border-t border-white/5"
+                                    >
+                                      <i className="fa-solid fa-microphone text-purple-400 text-sm"></i>
+                                      Explain it to me
+                                    </button>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </div>
+
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+              </motion.div>
+            );
+          })}
           
-          {/* Thinking Indicator is now always at the bottom if isThinking is true, but we may want to hide it if text has started streaming? 
-              Actually, for the "Research/Visuals" phase we need it. For "Synthesis" phase, text is streaming. 
-              We can conditionally show it if the last message text is empty. */}
-          {isThinking && (!messages.length || messages[messages.length-1].role === 'user' || !messages[messages.length-1].text) && (
+          {/* Holographic Stepper State */}
+          {/* Show when thinking, and the last message (model) has NO text yet */}
+          {isThinking && (!messages.length || (messages[messages.length-1].role === 'model' && !messages[messages.length-1].text)) && (
             <motion.div
-               key="thinking"
+               key="stepper"
                initial={{ opacity: 0 }}
                animate={{ opacity: 1 }}
                exit={{ opacity: 0 }}
+               className="w-full"
             >
-              <ThinkingIndicator status={thinkingStatus} />
+              <HolographicStepper status={thinkingStatus || "Initializing..."} />
             </motion.div>
           )}
 

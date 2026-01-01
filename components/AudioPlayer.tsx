@@ -105,8 +105,9 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({
                   r={radius}
                   fill="none"
                   strokeWidth="2"
-                  className="stroke-zinc-500 origin-center animate-spin-slow"
-                  strokeDasharray={`${circumference * 0.25} ${circumference * 0.75}`}
+                  className="stroke-cyan-500 origin-center animate-spin"
+                  strokeDasharray={`${circumference * 0.3} ${circumference * 0.7}`}
+                  style={{ animationDuration: '1s' }}
                 />
               ) : (
                 // Progress Ring
@@ -127,7 +128,10 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({
             {/* Icon Center */}
             <div className="relative z-10 text-white group-hover:text-cyan-200 transition-colors text-xl">
                {isBuffering ? (
-                 <i className="fa-solid fa-circle-notch animate-spin text-zinc-400"></i>
+                 <motion.div
+                   initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                   className="w-2 h-2 bg-cyan-400 rounded-full animate-pulse"
+                 />
                ) : isPlaying ? (
                  <i className="fa-solid fa-pause"></i>
                ) : (

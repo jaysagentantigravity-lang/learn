@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { AnimatePresence } from 'framer-motion';
 import BackgroundMesh, { BackgroundMode } from './components/BackgroundMesh';
 import InputBar from './components/InputBar';
 import MessageList from './components/MessageList';
@@ -18,6 +18,19 @@ function App() {
   const [settings, setSettings] = useState<UserSettings>({ voiceName: 'Kore' });
 
   const [activeOptions, setActiveOptions] = useState<ProcessingOptions>({ useThinking: false, useSearch: true });
+
+  // --- CONTROL STATE ---
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // --- STREAM SMOOTHING STATE ---
+  // The 'target' text that the model has generated so far (raw from network)
+  const streamTargetRef = useRef<string>(""); 
+  // The text currently displayed in the UI
+  const streamDisplayedRef = useRef<string>(""); 
+  // The ID of the message currently being streamed
+  const streamingMessageIdRef = useRef<string | null>(null);
+  // Animation frame reference
+  const streamLoopRef = useRef<number>(0);
 
   // Audio Engine State
   const [audioQueue, setAudioQueue] = useState<AudioChunk[]>([]);
@@ -48,6 +61,45 @@ function App() {
     }
   };
 
+  // --- STREAM SMOOTHING LOOP ---
+  useEffect(() => {
+    const loop = () => {
+      if (!streamingMessageIdRef.current) {
+        streamLoopRef.current = requestAnimationFrame(loop);
+        return;
+      }
+
+      const target = streamTargetRef.current;
+      const current = streamDisplayedRef.current;
+
+      if (current.length < target.length) {
+        // Determine typing speed based on lag
+        const distance = target.length - current.length;
+        // If far behind (e.g. large chunk arrived), speed up. If close, slow down for effect.
+        // Min 1 char, Max 10 chars per frame
+        const charsToAdd = Math.max(1, Math.min(10, Math.ceil(distance / 5)));
+        
+        const nextSlice = target.substring(0, current.length + charsToAdd);
+        streamDisplayedRef.current = nextSlice;
+
+        // Update React State
+        setMessages(prev => prev.map(m => {
+          if (m.id === streamingMessageIdRef.current) {
+            return { ...m, text: nextSlice };
+          }
+          return m;
+        }));
+      }
+
+      streamLoopRef.current = requestAnimationFrame(loop);
+    };
+
+    streamLoopRef.current = requestAnimationFrame(loop);
+
+    return () => cancelAnimationFrame(streamLoopRef.current);
+  }, []);
+
+
   // --- "Invisible Relay" Audio Engine ---
 
   // 1. Fetcher Helper
@@ -73,11 +125,17 @@ function App() {
     setCurrentChunkId(chunkId);
     setIsBuffering(true);
     
+    // Start Loading Loop Sound
+    if (audioContextRef.current) playSystemSound('thrum_start', audioContextRef.current);
+    
     // Ensure data is ready
     let audioData = chunk.audioData;
     if (!audioData) {
        audioData = await loadChunkAudio(chunk);
     }
+    
+    // Stop Loading Loop Sound
+    if (audioContextRef.current) playSystemSound('thrum_stop', audioContextRef.current);
     
     if (!audioData) {
        // Skip if error
@@ -108,8 +166,8 @@ function App() {
          handleNextChunk();
       };
       
-      // Play System Sound 'Ready' if this is the first chunk or we were paused/buffering long
-      playSystemSound('ready', audioContextRef.current);
+      // Play 'Ping' Ready Sound
+      playSystemSound('ping', audioContextRef.current);
 
       source.start();
       sourceNodeRef.current = source;
@@ -176,6 +234,7 @@ function App() {
      if (sourceNodeRef.current) {
         try { sourceNodeRef.current.stop(); } catch(e) {}
      }
+     if (audioContextRef.current) playSystemSound('thrum_stop', audioContextRef.current);
      setIsAudioPlaying(false);
      setAudioProgress(0);
      cancelAnimationFrame(progressLoopRef.current);
@@ -196,17 +255,18 @@ function App() {
 
   const handleAudioTrigger = async (msg: Message, mode: AudioMode) => {
     initAudio();
-    if(audioContextRef.current) playSystemSound('thinking', audioContextRef.current);
+    if(audioContextRef.current) playSystemSound('thrum_start', audioContextRef.current);
 
-    // Stop existing
     stopAudio();
+    setIsBuffering(true);
+    setAudioQueue([{ id: 'init', text: 'init', audioData: null, status: 'pending' }]); 
+    setCurrentChunkId('init');
 
     let textToRead = msg.text;
     if (mode === 'story') {
        textToRead = await generateStoryModeSummary(msg.text);
     }
 
-    // 3-Chunk Logic
     const chunks = splitTextIntoChunks(textToRead);
     const newQueue: AudioChunk[] = chunks.map((text, i) => ({
        id: `${msg.id}_${mode}_part_${i}`,
@@ -217,8 +277,9 @@ function App() {
 
     setAudioQueue(newQueue);
     
+    if(audioContextRef.current) playSystemSound('thrum_stop', audioContextRef.current);
+
     if (newQueue.length > 0) {
-       // Start the engine
        playChunk(newQueue[0].id);
     }
   };
@@ -226,9 +287,30 @@ function App() {
 
   // --- Main App Logic ---
 
+  const handleStopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setAppState(AppState.IDLE);
+      setThinkingStatus("Stopped.");
+      // Force text sync if stopped mid-stream
+      streamingMessageIdRef.current = null;
+    }
+  };
+
   const handleSendMessage = async (text: string, options: ProcessingOptions) => {
     initAudio();
     setActiveOptions(options);
+
+    // Cancel previous
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    // New Controller
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    const history = [...messages]; 
 
     if (!options.clarificationContext) {
       const userMsg: Message = {
@@ -254,21 +336,35 @@ function App() {
       groundingSources: [],
     };
     
-    // We add the model message immediately, it will be populated via stream
     setMessages(prev => [...prev, modelMsg]);
+
+    // Initialize Streaming Refs
+    streamingMessageIdRef.current = modelMsgId;
+    streamTargetRef.current = "";
+    streamDisplayedRef.current = "";
 
     try {
       const imageForApi = options.image ? options.image.split(',')[1] : undefined;
       
       await generateResponseStream(
         text, 
+        history,
         { ...options, image: imageForApi },
         (update: StreamUpdate) => {
+           // We ONLY update the message structure (clarifications, sources) directly.
+           // Text is routed through the smoothing buffer.
+           
+           if (update.text !== undefined) {
+             // API gives accumulated text. Update target.
+             streamTargetRef.current = update.text;
+           }
+
            setMessages(prev => prev.map(m => {
              if (m.id === modelMsgId) {
                return {
                  ...m,
-                 text: update.text !== undefined ? update.text : m.text,
+                 // We do NOT update 'text' here, the loop does it.
+                 // Unless the update provides NO text (e.g. just sources), then we keep existing.
                  groundingSources: update.sources ? update.sources : m.groundingSources,
                  clarification: update.clarification ? update.clarification : m.clarification
                };
@@ -280,15 +376,25 @@ function App() {
               setThinkingStatus(update.status);
               if (update.status === "completed") {
                  setAppState(AppState.IDLE);
+                 // Ensure final text is fully synced (snap to end)
+                 streamDisplayedRef.current = streamTargetRef.current;
+                 setMessages(prev => prev.map(m => m.id === modelMsgId ? { ...m, text: streamTargetRef.current } : m));
+                 streamingMessageIdRef.current = null;
+                 abortControllerRef.current = null;
               }
            }
-        }
+        },
+        abortController.signal
       );
 
-    } catch (error) {
-      console.error(error);
-      setMessages(prev => prev.map(m => m.id === modelMsgId ? { ...m, text: "I encountered a disturbance in the network.", isError: true } : m));
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        console.error(error);
+        setMessages(prev => prev.map(m => m.id === modelMsgId ? { ...m, text: "I encountered a disturbance in the network.", isError: true } : m));
+      }
       setAppState(AppState.IDLE);
+      streamingMessageIdRef.current = null;
+      abortControllerRef.current = null;
     }
   };
 
@@ -353,7 +459,7 @@ function App() {
         onUpdateSettings={setSettings}
       />
 
-      {/* Content Container (Simplified, no sidebar shifting) */}
+      {/* Content Container */}
       <div className="flex-1 flex flex-col h-full relative z-10 min-w-0">
           <div className="flex-1 overflow-hidden relative">
             {messages.length === 0 && appState === AppState.IDLE ? (
@@ -375,6 +481,7 @@ function App() {
                      appState={appState} 
                      onSendMessage={handleSendMessage}
                      onAudioInput={handleAudioInput}
+                     onStop={handleStopGeneration}
                  />
              </div>
           </div>

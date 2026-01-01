@@ -5,9 +5,10 @@ interface InputBarProps {
   appState: AppState;
   onSendMessage: (text: string, options: ProcessingOptions) => void;
   onAudioInput: (blob: Blob) => void;
+  onStop?: () => void;
 }
 
-const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInput }) => {
+const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInput, onStop }) => {
   const [inputText, setInputText] = useState('');
   const [useThinking, setUseThinking] = useState(false);
   const [useSearch, setUseSearch] = useState(true);
@@ -74,7 +75,7 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
     }
   };
 
-  const isDisabled = appState === AppState.THINKING || appState === AppState.SPEAKING;
+  const isThinking = appState === AppState.THINKING;
 
   return (
     <div className="w-full max-w-2xl px-4 pb-6">
@@ -93,7 +94,7 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
 
       <div className="relative group">
         {/* Glow effect behind the bar */}
-        <div className="absolute -inset-0.5 bg-gradient-to-r from-cyan-500 to-purple-600 rounded-full opacity-20 group-hover:opacity-40 transition duration-500 blur"></div>
+        <div className={`absolute -inset-0.5 rounded-full opacity-20 group-hover:opacity-40 transition duration-500 blur ${isThinking ? 'bg-amber-500 animate-pulse' : 'bg-gradient-to-r from-cyan-500 to-purple-600'}`}></div>
         
         <div className="relative flex items-center bg-black/40 backdrop-blur-xl border border-white/10 rounded-full p-2 pr-2 shadow-2xl">
           
@@ -101,14 +102,16 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
           <div className="flex items-center gap-1 pl-2 border-r border-white/10 pr-2 mr-2">
             <button 
                 onClick={() => setUseThinking(!useThinking)}
-                className={`p-2 rounded-full transition-colors text-lg ${useThinking ? 'bg-amber-500/20 text-amber-400' : 'text-gray-400 hover:text-white'}`}
+                disabled={isThinking}
+                className={`p-2 md:p-3 rounded-full transition-colors text-lg ${useThinking ? 'bg-amber-500/20 text-amber-400' : 'text-gray-400 hover:text-white disabled:opacity-50'}`}
                 title="Deep Thinking Mode (Gemini Pro)"
             >
                 <i className="fa-solid fa-brain"></i>
             </button>
             <button 
                 onClick={() => fileInputRef.current?.click()}
-                className={`p-2 rounded-full transition-colors text-lg ${selectedImage ? 'text-cyan-400' : 'text-gray-400 hover:text-white'}`}
+                disabled={isThinking}
+                className={`p-2 md:p-3 rounded-full transition-colors text-lg ${selectedImage ? 'text-cyan-400' : 'text-gray-400 hover:text-white disabled:opacity-50'}`}
                 title="Upload Image"
             >
                 <i className="fa-solid fa-image"></i>
@@ -128,39 +131,52 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={isRecording ? "Listening..." : "Ask anything..."}
-            disabled={isDisabled || isRecording}
+            placeholder={isRecording ? "Listening..." : (isThinking ? "Processing..." : "Ask anything...")}
+            disabled={isThinking || isRecording}
             className="flex-1 bg-transparent border-none outline-none text-white placeholder-gray-500 text-sm md:text-base min-w-0"
           />
 
           <div className="flex items-center gap-1">
             <button 
                 onClick={toggleRecording}
-                className={`p-2 rounded-full transition-all text-lg ${isRecording ? 'bg-red-500/80 text-white animate-pulse' : 'text-gray-400 hover:text-white'}`}
+                disabled={isThinking}
+                className={`p-2 md:p-3 rounded-full transition-all text-lg ${isRecording ? 'bg-red-500/80 text-white animate-pulse' : 'text-gray-400 hover:text-white disabled:opacity-50'}`}
             >
                 <i className="fa-solid fa-microphone"></i>
             </button>
             
-            <button 
-                onClick={handleSend}
-                disabled={isDisabled || (!inputText && !selectedImage)}
-                className={`p-2 rounded-full transition-all duration-300 text-lg
-                  ${(inputText || selectedImage) && !isDisabled 
-                    ? 'bg-white text-black hover:bg-cyan-50 transform hover:scale-105' 
-                    : 'bg-white/5 text-gray-500 cursor-not-allowed'}`}
-            >
-                {useThinking ? <i className="fa-solid fa-wand-magic-sparkles"></i> : <i className="fa-solid fa-paper-plane"></i>}
-            </button>
+            {isThinking ? (
+              <button 
+                onClick={onStop}
+                className="p-2 md:p-3 rounded-full transition-all duration-300 text-lg bg-red-500/20 text-red-400 hover:bg-red-500 hover:text-white animate-pulse"
+                title="Stop Generation"
+              >
+                 <i className="fa-solid fa-stop"></i>
+              </button>
+            ) : (
+              <button 
+                  onClick={handleSend}
+                  disabled={(!inputText && !selectedImage)}
+                  className={`p-2 md:p-3 rounded-full transition-all duration-300 text-lg
+                    ${(inputText || selectedImage)
+                      ? 'bg-white text-black hover:bg-cyan-50 transform hover:scale-105' 
+                      : 'bg-white/5 text-gray-500 cursor-not-allowed'}`}
+              >
+                  {useThinking ? <i className="fa-solid fa-wand-magic-sparkles"></i> : <i className="fa-solid fa-paper-plane"></i>}
+              </button>
+            )}
           </div>
         </div>
       </div>
       
       {/* Footer Hints */}
-      <div className="flex justify-center gap-4 mt-3 text-[10px] text-gray-500 uppercase tracking-widest font-semibold">
-        <span className={useThinking ? "text-amber-500/80" : ""}>{useThinking ? "Gemini 3 Pro (Deep Think)" : "Gemini 3 Flash"}</span>
-        <span>•</span>
-        <span className={useSearch ? "text-blue-400/80" : ""}>Search Grounding {useSearch ? "ON" : "OFF"}</span>
-      </div>
+      {!isThinking && (
+        <div className="flex justify-center gap-4 mt-3 text-[10px] text-gray-500 uppercase tracking-widest font-semibold">
+          <span className={useThinking ? "text-amber-500/80" : ""}>{useThinking ? "Gemini 3 Pro (Deep Think)" : "Gemini 3 Flash"}</span>
+          <span className="hidden md:inline">•</span>
+          <span className={useSearch ? "text-blue-400/80" : ""}>Search {useSearch ? "ON" : "OFF"}</span>
+        </div>
+      )}
     </div>
   );
 };
