@@ -181,8 +181,9 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
             className="rounded-[40px]" 
             // Removed manual duration to use the new slower default (14s)
             isThinking={isThinking}
+            allowOverflow={true} // Allow dropdowns to pop out
          >
-           <div className={`relative flex flex-col transition-all duration-300 group
+           <div className={`relative flex flex-col transition-all duration-300 group rounded-[inherit]
                ${isThinking 
                  ? 'bg-purple-900/10' // Very subtle tint for thinking
                  : 'bg-transparent'
@@ -248,7 +249,7 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
                                 initial={{ opacity: 0, y: 10, scale: 0.95 }}
                                 animate={{ opacity: 1, y: 0, scale: 1 }}
                                 exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                                className="absolute bottom-14 left-0 w-48 bg-[#0a0a0a] border border-white/10 rounded-3xl shadow-2xl overflow-hidden z-30 flex flex-col p-1"
+                                className="absolute bottom-14 left-0 w-48 bg-[#0a0a0a] border border-white/10 rounded-3xl shadow-2xl overflow-hidden z-[60] flex flex-col p-1"
                             >
                                 <button onClick={handleDriveClick} className="flex items-center gap-3 px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 rounded-2xl transition-colors">
                                     <i className="fa-brands fa-google-drive w-5 text-zinc-400 group-hover:text-white"></i>
@@ -299,7 +300,7 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
                                     initial={{ opacity: 0, y: 10, scale: 0.95 }}
                                     animate={{ opacity: 1, y: 0, scale: 1 }}
                                     exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                                    className="absolute bottom-10 left-0 w-64 bg-[#0a0a0a] border border-white/10 rounded-3xl shadow-2xl overflow-hidden z-30 p-1"
+                                    className="absolute bottom-10 left-0 w-64 bg-[#0a0a0a] border border-white/10 rounded-3xl shadow-2xl overflow-hidden z-[60] p-1"
                                 >
                                     {MODES.map(mode => (
                                         <button 
