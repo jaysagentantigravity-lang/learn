@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import BackgroundMesh, { BackgroundMode } from './components/BackgroundMesh';
 import InputBar from './components/InputBar';
@@ -6,8 +6,11 @@ import MessageList from './components/MessageList';
 import AudioPlayer from './components/AudioPlayer';
 import WelcomeScreen from './components/WelcomeScreen';
 import SettingsModal from './components/SettingsModal';
+import HistoryPanel from './components/HistoryPanel';
 import { generateResponseStream, generateSpeech, transcribeAudio, generateStoryModeSummary, StreamUpdate } from './services/geminiService';
-import { blobToBase64, splitTextIntoChunks, decode, decodeAudioData, playSystemSound } from './services/audioUtils';
+import { splitTextIntoChunks, decode, decodeAudioData, playSystemSound, blobToBase64 } from './services/audioUtils';
+import AudioContextManager from './services/audioContext';
+import { storageService, ChatSession } from './services/storageService';
 import { Message, AppState, ProcessingOptions, AudioChunk, UserSettings, AudioMode } from './types';
 
 function App() {
@@ -15,42 +18,91 @@ function App() {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [thinkingStatus, setThinkingStatus] = useState<string>("Processing...");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settings, setSettings] = useState<UserSettings>({ voiceName: 'Kore' });
+  
+  // Initialize settings from LocalStorage or Default
+  const [settings, setSettings] = useState<UserSettings>(() => {
+    try {
+      const saved = localStorage.getItem('lumina_settings');
+      return saved ? JSON.parse(saved) : { voiceName: 'Kore' };
+    } catch (e) {
+      return { voiceName: 'Kore' };
+    }
+  });
+
+  // Persist settings changes
+  useEffect(() => {
+    localStorage.setItem('lumina_settings', JSON.stringify(settings));
+  }, [settings]);
+  
+  // History & Session State
+  const [showHistory, setShowHistory] = useState(false);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string>(Date.now().toString());
   
   // User Menu State
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
-  const [activeOptions, setActiveOptions] = useState<ProcessingOptions>({ useThinking: false, useSearch: true });
+  const [activeOptions, setActiveOptions] = useState<ProcessingOptions>({ useThinking: false, useSearch: true, mode: 'explanatory' });
 
   // --- CONTROL STATE ---
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // --- STREAM SMOOTHING STATE ---
-  // The 'target' text that the model has generated so far (raw from network)
   const streamTargetRef = useRef<string>(""); 
-  // The text currently displayed in the UI
   const streamDisplayedRef = useRef<string>(""); 
-  // The ID of the message currently being streamed
   const streamingMessageIdRef = useRef<string | null>(null);
-  // Animation frame reference
   const streamLoopRef = useRef<number>(0);
 
   // Audio Engine State
   const [audioQueue, setAudioQueue] = useState<AudioChunk[]>([]);
+  const audioQueueRef = useRef<AudioChunk[]>([]);
+  
   const [currentChunkId, setCurrentChunkId] = useState<string | null>(null);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
-  const [audioProgress, setAudioProgress] = useState(0); // 0 to 1
+  const [audioProgress, setAudioProgress] = useState(0); 
   const [isBuffering, setIsBuffering] = useState(false);
   
-  // Refs for Audio Logic
-  const audioContextRef = useRef<AudioContext | null>(null);
+  // Refs for Audio Logic - Unified Manager
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
   const startTimeRef = useRef<number>(0);
   const durationRef = useRef<number>(0);
   const progressLoopRef = useRef<number>(0);
   const prefetchTriggeredRef = useRef<boolean>(false);
+
+  // CACHE & DEDUPLICATION
+  const chunkFetchPromises = useRef<Map<string, Promise<string | null>>>(new Map());
+
+  // Init Storage on Mount
+  useEffect(() => {
+    storageService.init();
+  }, []);
+
+  // Save Session Effect (Debounced)
+  useEffect(() => {
+    if (messages.length === 0) return;
+
+    const timeout = setTimeout(() => {
+        const title = messages[0].text.substring(0, 50) + (messages[0].text.length > 50 ? '...' : '');
+        const preview = messages[messages.length - 1].text.substring(0, 100);
+        
+        storageService.saveSession({
+            id: currentSessionId,
+            timestamp: Date.now(),
+            title: title,
+            preview: preview,
+            messages: messages
+        });
+    }, 1000); // Save 1s after last update
+
+    return () => clearTimeout(timeout);
+  }, [messages, currentSessionId]);
+
+  // Sync Ref with State
+  useEffect(() => {
+    audioQueueRef.current = audioQueue;
+  }, [audioQueue]);
 
   // Click outside listener for user menu
   useEffect(() => {
@@ -63,16 +115,13 @@ function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Initialize Audio Context
+  // Initialize Audio Context (Single Source)
   const initAudio = () => {
-    if (!audioContextRef.current) {
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      const analyser = audioContextRef.current.createAnalyser();
+    const ctx = AudioContextManager.getContext();
+    if (!analyserRef.current) {
+      const analyser = ctx.createAnalyser();
       analyser.fftSize = 64; 
       analyserRef.current = analyser;
-    }
-    if (audioContextRef.current.state === 'suspended') {
-      audioContextRef.current.resume();
     }
   };
 
@@ -88,16 +137,12 @@ function App() {
       const current = streamDisplayedRef.current;
 
       if (current.length < target.length) {
-        // Determine typing speed based on lag
         const distance = target.length - current.length;
-        // If far behind (e.g. large chunk arrived), speed up. If close, slow down for effect.
-        // Min 1 char, Max 10 chars per frame
         const charsToAdd = Math.max(1, Math.min(10, Math.ceil(distance / 5)));
         
         const nextSlice = target.substring(0, current.length + charsToAdd);
         streamDisplayedRef.current = nextSlice;
 
-        // Update React State
         setMessages(prev => prev.map(m => {
           if (m.id === streamingMessageIdRef.current) {
             return { ...m, text: nextSlice };
@@ -114,79 +159,92 @@ function App() {
     return () => cancelAnimationFrame(streamLoopRef.current);
   }, []);
 
+  // --- "Invisible Relay" Audio Engine Methods ---
+  const loadChunkAudio = async (chunkId: string): Promise<string | null> => {
+      const chunk = audioQueueRef.current.find(c => c.id === chunkId);
+      if (!chunk) return null;
 
-  // --- "Invisible Relay" Audio Engine ---
-
-  // 1. Fetcher Helper
-  const loadChunkAudio = async (chunk: AudioChunk) => {
-      if (chunk.status === 'ready' || chunk.status === 'played') return chunk.audioData;
-      
-      try {
-        const audioData = await generateSpeech(chunk.text, settings.voiceName);
-        setAudioQueue(prev => prev.map(c => c.id === chunk.id ? { ...c, status: 'ready', audioData } : c));
-        return audioData;
-      } catch (e) {
-        console.error("Audio Fetch Error", e);
-        setAudioQueue(prev => prev.map(c => c.id === chunk.id ? { ...c, status: 'error' } : c));
-        return null;
+      if (chunk.status === 'ready' || chunk.status === 'played' || chunk.audioData) {
+          return chunk.audioData;
       }
+
+      if (chunkFetchPromises.current.has(chunkId)) {
+          return chunkFetchPromises.current.get(chunkId)!;
+      }
+      
+      const fetchPromise = (async () => {
+         try {
+            const audioData = await generateSpeech(chunk.text, settings.voiceName);
+            if (audioData) {
+                setAudioQueue(prev => prev.map(c => c.id === chunkId ? { ...c, status: 'ready', audioData } : c));
+                return audioData;
+            } else {
+                setAudioQueue(prev => prev.map(c => c.id === chunkId ? { ...c, status: 'error' } : c));
+                return null;
+            }
+         } catch (e) {
+            console.error("Audio Fetch Error", e);
+            setAudioQueue(prev => prev.map(c => c.id === chunkId ? { ...c, status: 'error' } : c));
+            return null;
+         } finally {
+            chunkFetchPromises.current.delete(chunkId);
+         }
+      })();
+
+      chunkFetchPromises.current.set(chunkId, fetchPromise);
+      return fetchPromise;
   };
 
-  // 2. Play Logic
   const playChunk = async (chunkId: string) => {
-    const chunk = audioQueue.find(c => c.id === chunkId);
+    const chunk = audioQueueRef.current.find(c => c.id === chunkId);
     if (!chunk) return;
 
     setCurrentChunkId(chunkId);
     setIsBuffering(true);
     
-    // Start Loading Loop Sound
-    if (audioContextRef.current) playSystemSound('thrum_start', audioContextRef.current);
+    playSystemSound('thrum_start');
     
-    // Ensure data is ready
-    let audioData = chunk.audioData;
-    if (!audioData) {
-       audioData = await loadChunkAudio(chunk);
-    }
+    const audioData = await loadChunkAudio(chunkId);
     
-    // Stop Loading Loop Sound
-    if (audioContextRef.current) playSystemSound('thrum_stop', audioContextRef.current);
+    playSystemSound('thrum_stop');
     
     if (!audioData) {
-       // Skip if error
+       setIsBuffering(false);
        handleNextChunk();
        return;
     }
 
-    setIsBuffering(false);
+    const ctx = AudioContextManager.getContext();
+    if (!analyserRef.current) {
+        setIsBuffering(false);
+        return;
+    }
     
-    if (!audioContextRef.current || !analyserRef.current) return;
-    
-    // Stop previous
     if (sourceNodeRef.current) {
        try { sourceNodeRef.current.stop(); } catch(e) {}
     }
 
     try {
       const audioBytes = decode(audioData);
-      const audioBuffer = await decodeAudioData(audioBytes, audioContextRef.current, 24000, 1);
+      const audioBuffer = await decodeAudioData(audioBytes, ctx, 24000, 1);
       
-      const source = audioContextRef.current.createBufferSource();
+      const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(analyserRef.current);
-      analyserRef.current.connect(audioContextRef.current.destination);
+      analyserRef.current.connect(ctx.destination);
       
       source.onended = () => {
          setAudioQueue(prev => prev.map(c => c.id === chunkId ? { ...c, status: 'played' } : c));
          handleNextChunk();
       };
       
-      // Play 'Ping' Ready Sound
-      playSystemSound('ping', audioContextRef.current);
+      playSystemSound('ping');
 
+      setIsBuffering(false);
       source.start();
+      
       sourceNodeRef.current = source;
-      startTimeRef.current = audioContextRef.current.currentTime;
+      startTimeRef.current = ctx.currentTime;
       durationRef.current = audioBuffer.duration;
       prefetchTriggeredRef.current = false;
       setIsAudioPlaying(true);
@@ -195,23 +253,23 @@ function App() {
 
     } catch (e) {
       console.error("Playback Error", e);
+      setIsBuffering(false);
       handleNextChunk();
     }
   };
 
-  // 3. Progress & Prefetch Loop
   const startProgressLoop = () => {
      cancelAnimationFrame(progressLoopRef.current);
-     
+     const ctx = AudioContextManager.getContext();
+
      const loop = () => {
-        if (!isAudioPlaying || !sourceNodeRef.current || !audioContextRef.current) return;
+        if (!isAudioPlaying || !sourceNodeRef.current) return;
         
-        const elapsed = audioContextRef.current.currentTime - startTimeRef.current;
+        const elapsed = ctx.currentTime - startTimeRef.current;
         const progress = Math.min(elapsed / durationRef.current, 1);
         setAudioProgress(progress);
 
-        // Prefetch Logic: Trigger at 10%
-        if (progress > 0.10 && !prefetchTriggeredRef.current) {
+        if (progress > 0.15 && !prefetchTriggeredRef.current) {
            prefetchTriggeredRef.current = true;
            triggerPrefetch();
         }
@@ -224,21 +282,24 @@ function App() {
   };
 
   const triggerPrefetch = () => {
-     const idx = audioQueue.findIndex(c => c.id === currentChunkId);
-     if (idx !== -1 && idx < audioQueue.length - 1) {
-        const nextChunk = audioQueue[idx + 1];
-        if (nextChunk.status === 'pending') {
-           // Mark as loading internally in queue via loadChunkAudio
+     const currentId = currentChunkId; 
+     const queue = audioQueueRef.current;
+     
+     const idx = queue.findIndex(c => c.id === currentId);
+     if (idx !== -1 && idx < queue.length - 1) {
+        const nextChunk = queue[idx + 1];
+        if (nextChunk.status === 'pending' || nextChunk.status === 'error') {
            setAudioQueue(prev => prev.map(c => c.id === nextChunk.id ? { ...c, status: 'loading' } : c));
-           loadChunkAudio(nextChunk);
+           loadChunkAudio(nextChunk.id);
         }
      }
   };
 
   const handleNextChunk = () => {
-     const idx = audioQueue.findIndex(c => c.id === currentChunkId);
-     if (idx !== -1 && idx < audioQueue.length - 1) {
-        playChunk(audioQueue[idx + 1].id);
+     const queue = audioQueueRef.current;
+     const currentIdx = queue.findIndex(c => c.id === currentChunkId);
+     if (currentIdx !== -1 && currentIdx < queue.length - 1) {
+        playChunk(queue[currentIdx + 1].id);
      } else {
         stopAudio();
      }
@@ -248,7 +309,7 @@ function App() {
      if (sourceNodeRef.current) {
         try { sourceNodeRef.current.stop(); } catch(e) {}
      }
-     if (audioContextRef.current) playSystemSound('thrum_stop', audioContextRef.current);
+     playSystemSound('thrum_stop');
      setIsAudioPlaying(false);
      setAudioProgress(0);
      cancelAnimationFrame(progressLoopRef.current);
@@ -256,26 +317,24 @@ function App() {
   };
 
   const togglePlayPause = () => {
+     const ctx = AudioContextManager.getContext();
      if (isAudioPlaying) {
-        audioContextRef.current?.suspend();
+        ctx.suspend();
         setIsAudioPlaying(false);
      } else {
-        audioContextRef.current?.resume();
+        ctx.resume();
         setIsAudioPlaying(true);
      }
   };
 
-  // --- Trigger Entry Point ---
-
   const handleAudioTrigger = async (msg: Message, mode: AudioMode) => {
     initAudio();
-    if(audioContextRef.current) playSystemSound('thrum_start', audioContextRef.current);
+    playSystemSound('thrum_start');
 
     stopAudio();
     setIsBuffering(true);
-    setAudioQueue([{ id: 'init', text: 'init', audioData: null, status: 'pending' }]); 
-    setCurrentChunkId('init');
-
+    setAudioQueue([]); 
+    
     let textToRead = msg.text;
     if (mode === 'story') {
        textToRead = await generateStoryModeSummary(msg.text);
@@ -290,16 +349,16 @@ function App() {
     }));
 
     setAudioQueue(newQueue);
+    audioQueueRef.current = newQueue;
     
-    if(audioContextRef.current) playSystemSound('thrum_stop', audioContextRef.current);
+    playSystemSound('thrum_stop');
 
     if (newQueue.length > 0) {
        playChunk(newQueue[0].id);
+    } else {
+       setIsBuffering(false);
     }
   };
-
-
-  // --- Main App Logic ---
 
   const handleStopGeneration = () => {
     if (abortControllerRef.current) {
@@ -307,8 +366,9 @@ function App() {
       abortControllerRef.current = null;
       setAppState(AppState.IDLE);
       setThinkingStatus("Stopped.");
-      // Force text sync if stopped mid-stream
       streamingMessageIdRef.current = null;
+      stopAudio();
+      setAudioQueue([]);
     }
   };
 
@@ -316,11 +376,12 @@ function App() {
     initAudio();
     setActiveOptions(options);
 
-    // Cancel previous
+    // If we were in history view, close it
+    setShowHistory(false);
+
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
-    // New Controller
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
@@ -340,7 +401,6 @@ function App() {
     setAppState(AppState.THINKING);
     setThinkingStatus("Initializing...");
 
-    // Create placeholder message for streaming
     const modelMsgId = (Date.now() + 1).toString();
     const modelMsg: Message = {
       id: modelMsgId,
@@ -348,11 +408,11 @@ function App() {
       text: "",
       timestamp: Date.now(),
       groundingSources: [],
+      suggestedActions: [],
     };
     
     setMessages(prev => [...prev, modelMsg]);
 
-    // Initialize Streaming Refs
     streamingMessageIdRef.current = modelMsgId;
     streamTargetRef.current = "";
     streamDisplayedRef.current = "";
@@ -365,11 +425,7 @@ function App() {
         history,
         { ...options, image: imageForApi },
         (update: StreamUpdate) => {
-           // We ONLY update the message structure (clarifications, sources) directly.
-           // Text is routed through the smoothing buffer.
-           
            if (update.text !== undefined) {
-             // API gives accumulated text. Update target.
              streamTargetRef.current = update.text;
            }
 
@@ -377,10 +433,9 @@ function App() {
              if (m.id === modelMsgId) {
                return {
                  ...m,
-                 // We do NOT update 'text' here, the loop does it.
-                 // Unless the update provides NO text (e.g. just sources), then we keep existing.
                  groundingSources: update.sources ? update.sources : m.groundingSources,
-                 clarification: update.clarification ? update.clarification : m.clarification
+                 clarification: update.clarification ? update.clarification : m.clarification,
+                 suggestedActions: update.suggestedActions ? update.suggestedActions : m.suggestedActions
                };
              }
              return m;
@@ -390,7 +445,6 @@ function App() {
               setThinkingStatus(update.status);
               if (update.status === "completed") {
                  setAppState(AppState.IDLE);
-                 // Ensure final text is fully synced (snap to end)
                  streamDisplayedRef.current = streamTargetRef.current;
                  setMessages(prev => prev.map(m => m.id === modelMsgId ? { ...m, text: streamTargetRef.current } : m));
                  streamingMessageIdRef.current = null;
@@ -418,6 +472,7 @@ function App() {
         handleSendMessage(lastUserMsg.text, { 
           useThinking: true, 
           useSearch: true, 
+          mode: 'learning',
           clarificationContext: selectedOption 
         });
      }
@@ -425,146 +480,203 @@ function App() {
 
   const handleAudioInput = async (blob: Blob) => {
     initAudio();
+    setShowHistory(false);
     setAppState(AppState.THINKING);
     setThinkingStatus("Listening...");
-    setActiveOptions({ useSearch: true, useThinking: false }); 
+    setActiveOptions({ useSearch: true, useThinking: false, mode: 'explanatory' }); 
     
     try {
       const base64Audio = await blobToBase64(blob);
       setThinkingStatus("Transcribing...");
       const transcribedText = await transcribeAudio(base64Audio);
       if(transcribedText) {
-         handleSendMessage(transcribedText, { useThinking: false, useSearch: true });
+         handleSendMessage(transcribedText, { useThinking: false, useSearch: true, mode: 'explanatory' });
       } else {
         setAppState(AppState.IDLE);
       }
     } catch (error) {
         setAppState(AppState.IDLE);
+        console.error(error);
     }
   };
 
-  let visualMode: BackgroundMode = 'idle';
-  if (appState === AppState.THINKING) {
-     visualMode = activeOptions.useThinking ? 'thinking' : 'searching';
-  } else if (isAudioPlaying) {
-     visualMode = 'speaking';
+  // --- HISTORY HANDLERS ---
+  const handleToggleHistory = async () => {
+      if (!showHistory) {
+          // Opening History: Fetch optimized list (metadata only)
+          const saved = await storageService.getSessions();
+          setSessions(saved);
+      }
+      setShowHistory(!showHistory);
+  };
+
+  const handleLoadSession = async (sessionSummary: ChatSession) => {
+      // FIX: Fetch full session details (including messages) from IDB on demand
+      const fullSession = await storageService.getSession(sessionSummary.id);
+      
+      if (fullSession && fullSession.messages) {
+          setMessages(fullSession.messages);
+          setCurrentSessionId(fullSession.id);
+          setShowHistory(false);
+      } else {
+          console.error("Failed to load full session details");
+      }
+  };
+
+  const handleDeleteSession = async (id: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      await storageService.deleteSession(id);
+      setSessions(prev => prev.filter(s => s.id !== id));
+  };
+  
+  const handleClearChat = () => {
+     setMessages([]);
+     setCurrentSessionId(Date.now().toString());
+     setShowHistory(false);
   }
 
-  const handleSettingsClick = () => {
-    setIsUserMenuOpen(false);
-    setIsSettingsOpen(true);
-  };
-
-  const handleSubscriptionClick = () => {
-    setIsUserMenuOpen(false);
-    // Mock subscription action
-    alert("Subscription management would open here.");
-  };
-
-  const handleLogoutClick = () => {
-    setIsUserMenuOpen(false);
-    // Mock logout action
-    if(window.confirm("Are you sure you want to log out?")) {
-        window.location.reload();
-    }
-  };
+  // Determine Background Mode
+  let bgMode: BackgroundMode = 'idle';
+  if (appState === AppState.THINKING) {
+    bgMode = activeOptions.useSearch ? 'searching' : 'thinking';
+  } else if (appState === AppState.SPEAKING) {
+    bgMode = 'speaking';
+  }
 
   return (
-    <div className="relative h-screen w-full flex overflow-hidden font-sans bg-black">
+    <div className="relative w-full h-full flex flex-col overflow-hidden text-white font-sans selection:bg-cyan-500/30 selection:text-cyan-100">
       
-      {/* Background */}
-      <BackgroundMesh mode={visualMode} />
+      {/* 1. Dynamic Background */}
+      <BackgroundMesh mode={bgMode} />
 
-      {/* User Avatar & Dropdown */}
-      <div className="absolute top-5 right-6 z-50" ref={userMenuRef}>
-        <button 
-          onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
-          className="relative w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 transition-all flex items-center justify-center overflow-hidden shadow-lg group"
-        >
-          {/* Mock Avatar Gradient */}
-          <div className="absolute inset-0 bg-gradient-to-tr from-cyan-900 to-purple-900 opacity-80 group-hover:opacity-100 transition-opacity"></div>
-          <span className="relative text-xs font-bold text-white z-10">JS</span>
-        </button>
+      {/* 2. Top Bar (Settings / Clear) */}
+      <div className="absolute top-0 left-0 right-0 p-6 flex justify-between items-start z-50 pointer-events-none">
+         <div className="pointer-events-auto">
+             <button 
+               onClick={handleClearChat}
+               className="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center transition-all border border-white/5 hover:border-white/20 text-zinc-400 hover:text-white"
+               title="New Chat"
+             >
+                <i className="fa-solid fa-plus"></i>
+             </button>
+         </div>
 
-        <AnimatePresence>
-          {isUserMenuOpen && (
-            <motion.div
-              initial={{ opacity: 0, y: 10, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 10, scale: 0.95 }}
-              transition={{ duration: 0.2 }}
-              className="absolute right-0 mt-3 w-48 bg-[#0a0a0a] border border-white/10 rounded-2xl shadow-2xl overflow-hidden backdrop-blur-xl"
+         <div className="pointer-events-auto relative" ref={userMenuRef}>
+            <button 
+              onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+              className="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center transition-all border border-white/5 hover:border-white/20 text-zinc-400 hover:text-white"
             >
-              <div className="py-1">
-                <button onClick={handleSettingsClick} className="w-full text-left px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-3 transition-colors">
-                  <i className="fa-solid fa-gear text-xs w-4"></i> Settings
-                </button>
-                <button onClick={handleSubscriptionClick} className="w-full text-left px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-3 transition-colors">
-                  <i className="fa-solid fa-credit-card text-xs w-4"></i> Subscription
-                </button>
-                <div className="h-px bg-white/5 my-1 mx-2"></div>
-                <button onClick={handleLogoutClick} className="w-full text-left px-4 py-3 text-sm text-red-400 hover:text-red-300 hover:bg-red-500/10 flex items-center gap-3 transition-colors">
-                  <i className="fa-solid fa-right-from-bracket text-xs w-4"></i> Log out
-                </button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+              <i className="fa-solid fa-bars"></i>
+            </button>
+            <AnimatePresence>
+              {isUserMenuOpen && (
+                <motion.div 
+                   initial={{ opacity: 0, scale: 0.9, y: -10 }}
+                   animate={{ opacity: 1, scale: 1, y: 0 }}
+                   exit={{ opacity: 0, scale: 0.9, y: -10 }}
+                   className="absolute right-0 top-12 w-48 bg-black/80 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl overflow-hidden py-1"
+                >
+                   <button 
+                     onClick={() => { setIsSettingsOpen(true); setIsUserMenuOpen(false); }}
+                     className="w-full text-left px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-3"
+                   >
+                     <i className="fa-solid fa-sliders w-4 text-center"></i> Settings
+                   </button>
+                   <button 
+                     onClick={() => { window.open('https://ai.google.dev', '_blank'); setIsUserMenuOpen(false); }}
+                     className="w-full text-left px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-3"
+                   >
+                     <i className="fa-brands fa-google w-4 text-center"></i> About Gemini
+                   </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+         </div>
       </div>
 
+      {/* 3. Main Content Area */}
+      <div className="flex-1 relative flex flex-col min-h-0">
+         <AnimatePresence mode="wait">
+            {showHistory ? (
+                <motion.div 
+                    key="history"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                    className="flex-1 min-h-0"
+                >
+                    <HistoryPanel 
+                        sessions={sessions}
+                        onLoadSession={handleLoadSession}
+                        onDeleteSession={handleDeleteSession}
+                        onClose={() => setShowHistory(false)}
+                    />
+                </motion.div>
+            ) : messages.length === 0 ? (
+                <motion.div
+                    key="welcome"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.5 }}
+                    className="flex-1 min-h-0"
+                >
+                    <WelcomeScreen onSuggestionClick={(txt, opts) => handleSendMessage(txt, opts)} />
+                </motion.div>
+            ) : (
+                <motion.div
+                    key="chat"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="flex-1 min-h-0 relative"
+                >
+                    <MessageList 
+                        messages={messages} 
+                        onPlayAudio={handleAudioTrigger}
+                        onClarificationSubmit={handleClarificationSubmit}
+                        onSuggestionClick={(txt) => handleSendMessage(txt, { useThinking: false, useSearch: true, mode: 'explanatory' })}
+                        isThinking={appState === AppState.THINKING}
+                        thinkingStatus={thinkingStatus}
+                    />
+                </motion.div>
+            )}
+         </AnimatePresence>
+      </div>
+
+      {/* 4. Input Area (Fixed Bottom) */}
+      <div className="flex-none z-40 w-full flex justify-center bg-gradient-to-t from-black via-black/80 to-transparent pt-10">
+         <InputBar 
+            appState={appState}
+            onSendMessage={handleSendMessage}
+            onAudioInput={handleAudioInput}
+            onStop={handleStopGeneration}
+            onToggleHistory={handleToggleHistory}
+            isHistoryOpen={showHistory}
+         />
+      </div>
+
+      {/* 5. Overlays */}
       <SettingsModal 
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        settings={settings}
-        onUpdateSettings={setSettings}
+         isOpen={isSettingsOpen} 
+         onClose={() => setIsSettingsOpen(false)}
+         settings={settings}
+         onUpdateSettings={setSettings}
       />
 
-      {/* Content Container */}
-      <div className="flex-1 flex flex-col h-full relative z-10 min-w-0">
-          <div className="flex-1 overflow-hidden relative">
-            {messages.length === 0 && appState === AppState.IDLE ? (
-               <WelcomeScreen onSuggestionClick={handleSendMessage} />
-            ) : (
-               <MessageList 
-                 messages={messages} 
-                 onPlayAudio={handleAudioTrigger}
-                 onClarificationSubmit={handleClarificationSubmit}
-                 isThinking={appState === AppState.THINKING}
-                 thinkingStatus={thinkingStatus}
-               />
-            )}
-          </div>
-
-          <div className="w-full flex flex-col items-center justify-end pb-4 pt-4 pointer-events-none absolute bottom-0">
-             <div className="pointer-events-auto w-full flex justify-center px-4">
-                 <InputBar 
-                     appState={appState} 
-                     onSendMessage={handleSendMessage}
-                     onAudioInput={handleAudioInput}
-                     onStop={handleStopGeneration}
-                 />
-             </div>
-             
-             {/* Disclaimer */}
-             <div className="mt-4 text-[10px] text-zinc-600 font-sans tracking-tight text-center px-4 opacity-60">
-                Lumina may display inaccurate info, including about people, so double-check its responses.
-             </div>
-          </div>
-      </div>
-
-      {/* Minimalist Orb Player */}
       <AnimatePresence>
-        {audioQueue.length > 0 && (
-          <AudioPlayer 
-             queue={audioQueue}
-             currentChunkId={currentChunkId}
-             isPlaying={isAudioPlaying}
-             isBuffering={isBuffering}
-             onTogglePlay={togglePlayPause}
-             analyserNode={analyserRef.current}
-             currentProgress={audioProgress}
-          />
-        )}
+         {(isAudioPlaying || isBuffering) && (
+            <AudioPlayer 
+               queue={audioQueue}
+               currentChunkId={currentChunkId}
+               isPlaying={isAudioPlaying}
+               isBuffering={isBuffering}
+               onTogglePlay={togglePlayPause}
+               analyserNode={analyserRef.current}
+               currentProgress={audioProgress}
+            />
+         )}
       </AnimatePresence>
 
     </div>

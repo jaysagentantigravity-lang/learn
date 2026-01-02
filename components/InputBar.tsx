@@ -9,6 +9,8 @@ interface InputBarProps {
   onSendMessage: (text: string, options: ProcessingOptions) => void;
   onAudioInput: (blob: Blob) => void;
   onStop?: () => void;
+  onToggleHistory: () => void;
+  isHistoryOpen: boolean;
 }
 
 type ModeType = 'learning' | 'explanatory' | 'storytelling';
@@ -16,10 +18,10 @@ type ModeType = 'learning' | 'explanatory' | 'storytelling';
 const MODES = [
   { id: 'learning', label: 'Deep Dive', icon: 'fa-brain', desc: 'Thinking & Research' },
   { id: 'explanatory', label: 'Insight', icon: 'fa-lightbulb', desc: 'Fast & Factual' },
-  { id: 'storytelling', label: 'Storyteller', icon: 'fa-feather', desc: 'Creative Generation' }
+  { id: 'storytelling', label: 'Storyteller', icon: 'fa-feather', desc: 'Cinematic Narrative' }
 ];
 
-const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInput, onStop }) => {
+const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInput, onStop, onToggleHistory, isHistoryOpen }) => {
   const [inputText, setInputText] = useState('');
   
   // UI States
@@ -38,14 +40,7 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
   const [isRecording, setIsRecording] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // Audio Context
-  const [uiAudioCtx, setUiAudioCtx] = useState<AudioContext | null>(null);
-
   useEffect(() => {
-     if (!uiAudioCtx) {
-         setUiAudioCtx(new (window.AudioContext || (window as any).webkitAudioContext)());
-     }
-     
      // Close menus on click outside
      const handleClickOutside = (event: MouseEvent) => {
        if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
@@ -55,19 +50,22 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
      };
      document.addEventListener('mousedown', handleClickOutside);
      return () => document.removeEventListener('mousedown', handleClickOutside);
-
-  }, [uiAudioCtx]);
+  }, []);
 
   const handleSend = () => {
     if ((!inputText.trim() && attachments.length === 0) || isUploading) return;
     
     // Map UI Mode to ProcessingOptions
-    let options: ProcessingOptions = { useThinking: false, useSearch: true };
+    let options: ProcessingOptions = { 
+      useThinking: false, 
+      useSearch: true,
+      mode: selectedMode 
+    };
     
     if (selectedMode === 'learning') {
-      options = { useThinking: true, useSearch: true };
+      options = { useThinking: true, useSearch: true, mode: 'learning' };
     } else if (selectedMode === 'storytelling') {
-      options = { useThinking: false, useSearch: false };
+      options = { useThinking: false, useSearch: false, mode: 'storytelling' };
     }
 
     // Process first image
@@ -112,7 +110,7 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
       setIsUploading(true);
       setTimeout(() => {
         setIsUploading(false);
-        if (uiAudioCtx) playSystemSound('ping', uiAudioCtx);
+        playSystemSound('ping');
       }, 1500);
     }
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -123,7 +121,7 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
       setShowAttachMenu(false);
       setTimeout(() => {
           setDriveConnecting(false);
-          if (uiAudioCtx) playSystemSound('tick', uiAudioCtx);
+          playSystemSound('tick');
           alert("Google Drive: Connected (Mock)");
       }, 1000);
   };
@@ -174,18 +172,29 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
       className="w-full max-w-3xl px-4 pb-8" 
     >
        {/* Main Input Container - Wrapped in BorderBeam for Continuous Effect */}
-       {/* BorderBeam provides the glass background now */}
-       <div className="rounded-[40px] shadow-2xl backdrop-blur-xl bg-black/40">
+       <div className="rounded-[40px] shadow-2xl backdrop-blur-xl bg-black/40 relative">
+         
+         {/* Internal Pulse for Thinking State */}
+         <AnimatePresence>
+            {isThinking && (
+               <motion.div 
+                 initial={{ opacity: 0 }}
+                 animate={{ opacity: 1 }}
+                 exit={{ opacity: 0 }}
+                 className="absolute inset-0 rounded-[40px] bg-cyan-500/5 shadow-[inset_0_0_20px_rgba(34,211,238,0.1)] pointer-events-none z-0"
+               />
+            )}
+         </AnimatePresence>
+
          <BorderBeam 
             alwaysOn={true} 
             className="rounded-[40px]" 
-            // Removed manual duration to use the new slower default (14s)
             isThinking={isThinking}
             allowOverflow={true} // Allow dropdowns to pop out
          >
            <div className={`relative flex flex-col transition-all duration-300 group rounded-[inherit]
                ${isThinking 
-                 ? 'bg-purple-900/10' // Very subtle tint for thinking
+                 ? 'bg-purple-900/5' 
                  : 'bg-transparent'
                }
            `}>
@@ -219,7 +228,7 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
               )}
 
               {/* Bottom Section: Controls & Text */}
-              <div className="flex items-end gap-2 p-3 relative">
+              <div className="flex items-end gap-2 p-3 relative z-10">
                  
                  {/* --- LEFT: ATTACHMENT MENU --- */}
                  <div className="flex flex-col gap-1 pb-1 pl-1 relative">
@@ -331,6 +340,16 @@ const InputBar: React.FC<InputBarProps> = ({ appState, onSendMessage, onAudioInp
 
                  {/* --- RIGHT: ACTIONS --- */}
                  <div className="flex items-center gap-2 pb-1 pr-1">
+                     {/* History Toggle Button */}
+                     <button
+                        onClick={onToggleHistory}
+                        disabled={isThinking || isRecording}
+                        className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${isHistoryOpen ? 'bg-cyan-900/40 text-cyan-400' : 'hover:bg-white/10 text-zinc-400 hover:text-white'}`}
+                        title="Conversation History"
+                     >
+                        <i className="fa-solid fa-clock-rotate-left"></i>
+                     </button>
+
                      <button 
                         onClick={toggleRecording}
                         disabled={isThinking}

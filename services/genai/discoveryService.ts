@@ -1,4 +1,5 @@
 import { ai, MODELS } from "./client";
+import { tokenEstimator } from "../tokenEstimator";
 
 const discoveryCache = new Map<string, any>();
 
@@ -6,17 +7,27 @@ const discoveryCache = new Map<string, any>();
  * Fetches dynamic discovery cards, greeting, and presets based on user location/context
  */
 export const fetchDynamicDiscovery = async (location: string) => {
-  // Simple in-memory cache to prevent re-fetching on every mount
-  // Added random factor to cache key to allow refresh updates as requested
-  const cacheKey = `discovery-${location}-${new Date().getHours()}-${Math.floor(Math.random() * 2)}`; 
+  // Optimization: Cache Key is now stable (Location + Hour) to prevent frequent refetching
+  const cacheKey = `discovery-${location}-${new Date().getHours()}`; 
+  
+  // 1. Check Memory Cache
   if (discoveryCache.has(cacheKey)) {
     return discoveryCache.get(cacheKey);
   }
 
+  // 2. Check Local Storage (Persistence across reloads)
   try {
-    const response = await ai.models.generateContent({
-      model: MODELS.FAST,
-      contents: `
+      const stored = localStorage.getItem(cacheKey);
+      if (stored) {
+          const parsed = JSON.parse(stored);
+          discoveryCache.set(cacheKey, parsed);
+          return parsed;
+      }
+  } catch (e) {
+      // Ignore storage errors
+  }
+
+  const prompt = `
         You are a dynamic content curator for a futuristic learning AI interface.
         
         CONTEXT:
@@ -68,7 +79,15 @@ export const fetchDynamicDiscovery = async (location: string) => {
              ... (4 presets)
           ]
         }
-      `,
+      `;
+
+  // TRACK USAGE
+  tokenEstimator.track('discovery', MODELS.FAST, prompt);
+
+  try {
+    const response = await ai.models.generateContent({
+      model: MODELS.FAST,
+      contents: prompt,
       config: {
         // Explicitly empty tools to prevent any 401 API key errors related to search
         tools: [],
@@ -81,12 +100,28 @@ export const fetchDynamicDiscovery = async (location: string) => {
     
     if (data.tiles && data.presets) {
       discoveryCache.set(cacheKey, data);
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify(data));
+        // Clear old keys to prevent bloat (Simple cleanup: remove anything not current key)
+        for (let i = 0; i < localStorage.length; i++) {
+           const key = localStorage.key(i);
+           if (key && key.startsWith('discovery-') && key !== cacheKey) {
+               localStorage.removeItem(key);
+           }
+        }
+      } catch (e) {}
       return data;
     }
     throw new Error("Invalid format");
 
-  } catch (e) {
-    console.error("Dynamic Discovery Failed", e);
+  } catch (e: any) {
+    // Specific handling for Quota Exceeded (429)
+    if (e.message?.includes('429') || e.status === 429 || (e.error && e.error.code === 429)) {
+        console.warn("Discovery API Quota Exceeded. Using offline fallback.");
+    } else {
+        console.error("Dynamic Discovery Failed", e);
+    }
+    
     // Fallback Data
     return {
       greeting: "Ignite your curiosity.",
