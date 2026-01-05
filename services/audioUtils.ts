@@ -72,7 +72,7 @@ export const splitTextIntoChunks = (text: string): string[] => {
   return chunks;
 };
 
-// --- PROCEDURAL ATMOSPHERE ENGINE (WITH DUCKING) ---
+// --- PROCEDURAL ATMOSPHERE ENGINE (LOUD & ROBUST) ---
 
 let activeOscillators: OscillatorNode[] = [];
 let activeGains: GainNode[] = [];
@@ -84,26 +84,44 @@ export interface AtmosphereController {
   stop: () => void;
 }
 
+// Frequencies optimized for cinematic tension
 const MOOD_FREQUENCIES: Record<string, number[]> = {
-  'heroic': [110, 164.81, 196.00, 220], // A Major
-  'tragic': [58.27, 87.31, 103.83, 138.59], // Bb Minor
-  'mysterious': [73.42, 110, 130.81, 146.83], // D minor add 9
-  'energetic': [130.81, 196.00, 261.63, 329.63], // C Major fast
-  'peaceful': [98.00, 146.83, 196.00, 246.94] // G Major
+  'heroic': [55, 110, 164.81, 220], // A Major (Deep Bass A1 + A2 + E3 + A3)
+  'tragic': [58.27, 116.54, 138.59, 174.61], // Bb Minor (Dark)
+  'mysterious': [73.42, 110, 130.81, 146.83], // D minor add 9 (Sci-fi)
+  'energetic': [65.41, 130.81, 196.00, 261.63], // C Major (Bright)
+  'peaceful': [49.00, 98.00, 146.83, 196.00] // G Major (Warm)
 };
 
 export const startAtmosphere = (mood: string): AtmosphereController => {
   stopAtmosphere(); // Clean up previous
 
   const ctx = AudioContextManager.getContext();
+  
+  // Ensure context is running (Fix for browser autoplay policy)
+  if (ctx.state === 'suspended') {
+      ctx.resume();
+  }
+
   const freqs = MOOD_FREQUENCIES[mood] || MOOD_FREQUENCIES['peaceful'];
   const now = ctx.currentTime;
 
-  // Master Gain for Atmosphere (This is what we duck)
+  // Master Gain: Controls the overall volume of the music layer
+  // INCREASED BASE VOLUME from 0.12 to 0.25 so it is audible
   const masterGain = ctx.createGain();
   masterGain.gain.setValueAtTime(0, now);
-  masterGain.gain.linearRampToValueAtTime(0.12, now + 3); // Fade in
-  masterGain.connect(ctx.destination);
+  masterGain.gain.linearRampToValueAtTime(0.25, now + 2); // Quick fade in
+  
+  // Add a Compressor to prevent clipping/distortion when loud
+  const compressor = ctx.createDynamicsCompressor();
+  compressor.threshold.setValueAtTime(-24, now);
+  compressor.knee.setValueAtTime(30, now);
+  compressor.ratio.setValueAtTime(12, now);
+  compressor.attack.setValueAtTime(0.003, now);
+  compressor.release.setValueAtTime(0.25, now);
+
+  masterGain.connect(compressor);
+  compressor.connect(ctx.destination);
   
   currentMasterGain = masterGain;
   activeGains.push(masterGain);
@@ -111,21 +129,28 @@ export const startAtmosphere = (mood: string): AtmosphereController => {
   // Create Oscillators (The Layer)
   freqs.forEach((freq, i) => {
     const osc = ctx.createOscillator();
-    osc.type = i % 2 === 0 ? 'sine' : 'triangle';
-    osc.frequency.setValueAtTime(freq, now);
-    osc.detune.setValueAtTime(Math.random() * 10 - 5, now);
     
-    // LFO for movement
+    // CHANGED: Use 'triangle' and 'sawtooth' instead of 'sine'.
+    // Sine waves are very quiet on small speakers. Triangle/Sawtooth have harmonics.
+    osc.type = i === 0 ? 'triangle' : (i % 2 === 0 ? 'sine' : 'triangle');
+    
+    osc.frequency.setValueAtTime(freq, now);
+    // Detune adds richness/chorus effect
+    osc.detune.setValueAtTime(Math.random() * 12 - 6, now);
+    
+    // LFO for movement (Breathing effect)
     const lfo = ctx.createOscillator();
     lfo.type = 'sine';
-    lfo.frequency.setValueAtTime(0.1 + (Math.random() * 0.2), now);
+    lfo.frequency.setValueAtTime(0.05 + (Math.random() * 0.1), now);
     
     const lfoGain = ctx.createGain();
-    lfoGain.gain.setValueAtTime(0.3, now);
+    lfoGain.gain.setValueAtTime(0.15, now); // Depth of modulation
     lfo.connect(lfoGain.gain);
     
     const oscGain = ctx.createGain();
-    oscGain.gain.setValueAtTime(0.4, now); // Individual osc volume
+    // Lower volume for high pitch, higher volume for bass
+    const baseVol = i === 0 ? 0.6 : 0.3; 
+    oscGain.gain.setValueAtTime(baseVol, now); 
     
     osc.connect(oscGain);
     oscGain.connect(masterGain);
@@ -142,16 +167,16 @@ export const startAtmosphere = (mood: string): AtmosphereController => {
   return {
     duck: () => {
       if (masterGain) {
-        // Drop volume to 30% quickly
+        // Drop volume to 8% when voice is speaking (was 4%)
         masterGain.gain.cancelScheduledValues(ctx.currentTime);
-        masterGain.gain.setTargetAtTime(0.04, ctx.currentTime, 0.5); 
+        masterGain.gain.setTargetAtTime(0.08, ctx.currentTime, 0.5); 
       }
     },
     lift: () => {
       if (masterGain) {
-        // Raise volume back slowly
+        // Swell volume to 25% during transitions (was 12%)
         masterGain.gain.cancelScheduledValues(ctx.currentTime);
-        masterGain.gain.setTargetAtTime(0.12, ctx.currentTime, 2.0);
+        masterGain.gain.setTargetAtTime(0.25, ctx.currentTime, 1.5);
       }
     },
     stop: () => stopAtmosphere()
@@ -182,9 +207,9 @@ export const stopAtmosphere = () => {
 // --- Procedural System Sounds ---
 export const playSystemSound = (type: 'tick' | 'thrum_start' | 'thrum_stop' | 'ping') => {
   const ctx = AudioContextManager.getContext();
+  if (ctx.state === 'suspended') ctx.resume(); // Vital for UI sounds
   const now = ctx.currentTime;
 
-  // Simple synthesizers for UI feedback
   if (type === 'tick') {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -192,10 +217,21 @@ export const playSystemSound = (type: 'tick' | 'thrum_start' | 'thrum_stop' | 'p
     gain.connect(ctx.destination);
     osc.frequency.setValueAtTime(800, now);
     osc.frequency.exponentialRampToValueAtTime(100, now + 0.05);
-    gain.gain.setValueAtTime(0.05, now);
+    gain.gain.setValueAtTime(0.1, now); // Boosted volume
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
     osc.start(now);
     osc.stop(now + 0.06);
+  } else if (type === 'ping') {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(600, now);
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.2, now + 0.1);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+    osc.start(now);
+    osc.stop(now + 0.6);
   }
-  // ... (Other sounds preserved) ...
 };

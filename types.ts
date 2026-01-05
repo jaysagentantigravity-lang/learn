@@ -27,6 +27,7 @@ export interface StoryChapter {
   narrative: string; // The text to be spoken/read
   visualPrompt: string; // Prompt for the image generator
   mood: 'heroic' | 'tragic' | 'mysterious' | 'energetic' | 'peaceful';
+  durationEstimate?: number; // Estimated seconds
   widget?: {
     type: 'CHART' | 'MAP' | 'STATS' | 'RADAR' | 'LOGOS';
     data: any; // JSON string or object for the widget

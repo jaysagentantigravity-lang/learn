@@ -29,17 +29,14 @@ function App() {
     }
   });
 
-  // Persist settings changes
   useEffect(() => {
     localStorage.setItem('lumina_settings', JSON.stringify(settings));
   }, [settings]);
   
-  // History & Session State
   const [showHistory, setShowHistory] = useState(false);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string>(Date.now().toString());
   
-  // User Menu State
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
@@ -63,15 +60,12 @@ function App() {
   const [audioProgress, setAudioProgress] = useState(0); 
   const [isBuffering, setIsBuffering] = useState(false);
   
-  // Refs for Audio Logic - Unified Manager
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
   const startTimeRef = useRef<number>(0);
   const durationRef = useRef<number>(0);
   const progressLoopRef = useRef<number>(0);
   const prefetchTriggeredRef = useRef<boolean>(false);
-
-  // CACHE & DEDUPLICATION
   const chunkFetchPromises = useRef<Map<string, Promise<string | null>>>(new Map());
 
   // Init Storage on Mount
@@ -82,11 +76,9 @@ function App() {
   // Save Session Effect (Debounced)
   useEffect(() => {
     if (messages.length === 0) return;
-
     const timeout = setTimeout(() => {
         const title = messages[0].text.substring(0, 50) + (messages[0].text.length > 50 ? '...' : '');
         const preview = messages[messages.length - 1].text.substring(0, 100);
-        
         storageService.saveSession({
             id: currentSessionId,
             timestamp: Date.now(),
@@ -94,17 +86,14 @@ function App() {
             preview: preview,
             messages: messages
         });
-    }, 1000); // Save 1s after last update
-
+    }, 1000); 
     return () => clearTimeout(timeout);
   }, [messages, currentSessionId]);
 
-  // Sync Ref with State
   useEffect(() => {
     audioQueueRef.current = audioQueue;
   }, [audioQueue]);
 
-  // Click outside listener for user menu
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
@@ -115,22 +104,23 @@ function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Initialize Audio Context (Single Source)
-  const initAudio = () => {
+  const initAudio = useCallback(() => {
     const ctx = AudioContextManager.getContext();
     if (!analyserRef.current) {
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 64; 
       analyserRef.current = analyser;
     }
-  };
+  }, []);
 
   // --- STREAM SMOOTHING LOOP ---
   useEffect(() => {
     const loop = () => {
+      // Optimization: Only run smoothing calculation if we have an active stream target
       if (!streamingMessageIdRef.current) {
-        streamLoopRef.current = requestAnimationFrame(loop);
-        return;
+         // Slow poll when idle
+         streamLoopRef.current = requestAnimationFrame(() => setTimeout(loop, 100));
+         return;
       }
 
       const target = streamTargetRef.current;
@@ -138,39 +128,37 @@ function App() {
 
       if (current.length < target.length) {
         const distance = target.length - current.length;
-        const charsToAdd = Math.max(1, Math.min(10, Math.ceil(distance / 5)));
+        // Adaptive speed: If falling behind, speed up
+        const charsToAdd = Math.max(1, Math.min(20, Math.ceil(distance / 3)));
         
         const nextSlice = target.substring(0, current.length + charsToAdd);
         streamDisplayedRef.current = nextSlice;
 
-        setMessages(prev => prev.map(m => {
-          if (m.id === streamingMessageIdRef.current) {
-            return { ...m, text: nextSlice };
+        // Optimized State Update: Only update the specific message
+        setMessages(prev => {
+          const newMsgs = [...prev];
+          const idx = newMsgs.findIndex(m => m.id === streamingMessageIdRef.current);
+          if (idx !== -1) {
+             // Create new object reference only for changed message
+             newMsgs[idx] = { ...newMsgs[idx], text: nextSlice };
+             return newMsgs;
           }
-          return m;
-        }));
+          return prev;
+        });
       }
 
       streamLoopRef.current = requestAnimationFrame(loop);
     };
 
     streamLoopRef.current = requestAnimationFrame(loop);
-
     return () => cancelAnimationFrame(streamLoopRef.current);
   }, []);
 
-  // --- "Invisible Relay" Audio Engine Methods ---
-  const loadChunkAudio = async (chunkId: string): Promise<string | null> => {
+  const loadChunkAudio = useCallback(async (chunkId: string): Promise<string | null> => {
       const chunk = audioQueueRef.current.find(c => c.id === chunkId);
       if (!chunk) return null;
-
-      if (chunk.status === 'ready' || chunk.status === 'played' || chunk.audioData) {
-          return chunk.audioData;
-      }
-
-      if (chunkFetchPromises.current.has(chunkId)) {
-          return chunkFetchPromises.current.get(chunkId)!;
-      }
+      if (chunk.status === 'ready' || chunk.status === 'played' || chunk.audioData) return chunk.audioData;
+      if (chunkFetchPromises.current.has(chunkId)) return chunkFetchPromises.current.get(chunkId)!;
       
       const fetchPromise = (async () => {
          try {
@@ -183,29 +171,84 @@ function App() {
                 return null;
             }
          } catch (e) {
-            console.error("Audio Fetch Error", e);
             setAudioQueue(prev => prev.map(c => c.id === chunkId ? { ...c, status: 'error' } : c));
             return null;
          } finally {
             chunkFetchPromises.current.delete(chunkId);
          }
       })();
-
       chunkFetchPromises.current.set(chunkId, fetchPromise);
       return fetchPromise;
-  };
+  }, [settings.voiceName]);
 
-  const playChunk = async (chunkId: string) => {
+  const stopAudio = useCallback(() => {
+     if (sourceNodeRef.current) {
+        try { sourceNodeRef.current.stop(); } catch(e) {}
+     }
+     playSystemSound('thrum_stop');
+     setIsAudioPlaying(false);
+     setAudioProgress(0);
+     cancelAnimationFrame(progressLoopRef.current);
+     setIsBuffering(false);
+  }, []);
+
+  const handleNextChunk = useCallback(() => {
+     const queue = audioQueueRef.current;
+     const currentIdx = queue.findIndex(c => c.id === currentChunkId);
+     if (currentIdx !== -1 && currentIdx < queue.length - 1) {
+        // eslint-disable-next-line @typescript-eslint/no-use-before-define
+        playChunk(queue[currentIdx + 1].id);
+     } else {
+        stopAudio();
+     }
+  }, [currentChunkId, stopAudio]);
+
+  const triggerPrefetch = useCallback(() => {
+     const currentId = currentChunkId; 
+     const queue = audioQueueRef.current;
+     const idx = queue.findIndex(c => c.id === currentId);
+     if (idx !== -1 && idx < queue.length - 1) {
+        const nextChunk = queue[idx + 1];
+        if (nextChunk.status === 'pending' || nextChunk.status === 'error') {
+           setAudioQueue(prev => prev.map(c => c.id === nextChunk.id ? { ...c, status: 'loading' } : c));
+           loadChunkAudio(nextChunk.id);
+        }
+     }
+  }, [currentChunkId, loadChunkAudio]);
+
+  const startProgressLoop = useCallback(() => {
+     cancelAnimationFrame(progressLoopRef.current);
+     const ctx = AudioContextManager.getContext();
+
+     const loop = () => {
+        if (!sourceNodeRef.current) return;
+        
+        const elapsed = ctx.currentTime - startTimeRef.current;
+        const duration = durationRef.current || 1;
+        const progress = Math.min(elapsed / duration, 1);
+        setAudioProgress(progress);
+
+        if (progress > 0.15 && !prefetchTriggeredRef.current) {
+           prefetchTriggeredRef.current = true;
+           triggerPrefetch();
+        }
+
+        if (progress < 1) {
+           progressLoopRef.current = requestAnimationFrame(loop);
+        }
+     };
+     progressLoopRef.current = requestAnimationFrame(loop);
+  }, [triggerPrefetch]);
+
+  const playChunk = useCallback(async (chunkId: string) => {
     const chunk = audioQueueRef.current.find(c => c.id === chunkId);
     if (!chunk) return;
 
     setCurrentChunkId(chunkId);
     setIsBuffering(true);
-    
     playSystemSound('thrum_start');
     
     const audioData = await loadChunkAudio(chunkId);
-    
     playSystemSound('thrum_stop');
     
     if (!audioData) {
@@ -220,9 +263,7 @@ function App() {
         return;
     }
     
-    if (sourceNodeRef.current) {
-       try { sourceNodeRef.current.stop(); } catch(e) {}
-    }
+    if (sourceNodeRef.current) try { sourceNodeRef.current.stop(); } catch(e) {}
 
     try {
       const audioBytes = decode(audioData);
@@ -239,7 +280,6 @@ function App() {
       };
       
       playSystemSound('ping');
-
       setIsBuffering(false);
       source.start();
       
@@ -248,7 +288,6 @@ function App() {
       durationRef.current = audioBuffer.duration;
       prefetchTriggeredRef.current = false;
       setIsAudioPlaying(true);
-      
       startProgressLoop();
 
     } catch (e) {
@@ -256,67 +295,9 @@ function App() {
       setIsBuffering(false);
       handleNextChunk();
     }
-  };
+  }, [loadChunkAudio, handleNextChunk, startProgressLoop]);
 
-  const startProgressLoop = () => {
-     cancelAnimationFrame(progressLoopRef.current);
-     const ctx = AudioContextManager.getContext();
-
-     const loop = () => {
-        if (!isAudioPlaying || !sourceNodeRef.current) return;
-        
-        const elapsed = ctx.currentTime - startTimeRef.current;
-        const progress = Math.min(elapsed / durationRef.current, 1);
-        setAudioProgress(progress);
-
-        if (progress > 0.15 && !prefetchTriggeredRef.current) {
-           prefetchTriggeredRef.current = true;
-           triggerPrefetch();
-        }
-
-        if (progress < 1) {
-           progressLoopRef.current = requestAnimationFrame(loop);
-        }
-     };
-     progressLoopRef.current = requestAnimationFrame(loop);
-  };
-
-  const triggerPrefetch = () => {
-     const currentId = currentChunkId; 
-     const queue = audioQueueRef.current;
-     
-     const idx = queue.findIndex(c => c.id === currentId);
-     if (idx !== -1 && idx < queue.length - 1) {
-        const nextChunk = queue[idx + 1];
-        if (nextChunk.status === 'pending' || nextChunk.status === 'error') {
-           setAudioQueue(prev => prev.map(c => c.id === nextChunk.id ? { ...c, status: 'loading' } : c));
-           loadChunkAudio(nextChunk.id);
-        }
-     }
-  };
-
-  const handleNextChunk = () => {
-     const queue = audioQueueRef.current;
-     const currentIdx = queue.findIndex(c => c.id === currentChunkId);
-     if (currentIdx !== -1 && currentIdx < queue.length - 1) {
-        playChunk(queue[currentIdx + 1].id);
-     } else {
-        stopAudio();
-     }
-  };
-
-  const stopAudio = () => {
-     if (sourceNodeRef.current) {
-        try { sourceNodeRef.current.stop(); } catch(e) {}
-     }
-     playSystemSound('thrum_stop');
-     setIsAudioPlaying(false);
-     setAudioProgress(0);
-     cancelAnimationFrame(progressLoopRef.current);
-     setIsBuffering(false);
-  };
-
-  const togglePlayPause = () => {
+  const togglePlayPause = useCallback(() => {
      const ctx = AudioContextManager.getContext();
      if (isAudioPlaying) {
         ctx.suspend();
@@ -325,12 +306,11 @@ function App() {
         ctx.resume();
         setIsAudioPlaying(true);
      }
-  };
+  }, [isAudioPlaying]);
 
-  const handleAudioTrigger = async (msg: Message, mode: AudioMode) => {
+  const handleAudioTrigger = useCallback(async (msg: Message, mode: AudioMode) => {
     initAudio();
     playSystemSound('thrum_start');
-
     stopAudio();
     setIsBuffering(true);
     setAudioQueue([]); 
@@ -350,7 +330,6 @@ function App() {
 
     setAudioQueue(newQueue);
     audioQueueRef.current = newQueue;
-    
     playSystemSound('thrum_stop');
 
     if (newQueue.length > 0) {
@@ -358,9 +337,9 @@ function App() {
     } else {
        setIsBuffering(false);
     }
-  };
+  }, [initAudio, stopAudio, playChunk]);
 
-  const handleStopGeneration = () => {
+  const handleStopGeneration = useCallback(() => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
@@ -370,22 +349,18 @@ function App() {
       stopAudio();
       setAudioQueue([]);
     }
-  };
+  }, [stopAudio]);
 
-  const handleSendMessage = async (text: string, options: ProcessingOptions) => {
+  const handleSendMessage = useCallback(async (text: string, options: ProcessingOptions) => {
     initAudio();
     setActiveOptions(options);
-
-    // If we were in history view, close it
     setShowHistory(false);
 
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
+    if (abortControllerRef.current) abortControllerRef.current.abort();
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
-    const history = [...messages]; 
+    const historyState = [...messages]; 
 
     if (!options.clarificationContext) {
       const userMsg: Message = {
@@ -422,24 +397,34 @@ function App() {
       
       await generateResponseStream(
         text, 
-        history,
+        historyState,
         { ...options, image: imageForApi },
         (update: StreamUpdate) => {
            if (update.text !== undefined) {
              streamTargetRef.current = update.text;
            }
+           setMessages(prev => {
+             // Only map if necessary to save cycles
+             const index = prev.findIndex(m => m.id === modelMsgId);
+             if (index === -1) return prev;
+             
+             const target = prev[index];
+             if (
+                target.groundingSources === update.sources && 
+                target.clarification === update.clarification && 
+                target.suggestedActions === update.suggestedActions
+             ) return prev;
 
-           setMessages(prev => prev.map(m => {
-             if (m.id === modelMsgId) {
-               return {
-                 ...m,
-                 groundingSources: update.sources ? update.sources : m.groundingSources,
-                 clarification: update.clarification ? update.clarification : m.clarification,
-                 suggestedActions: update.suggestedActions ? update.suggestedActions : m.suggestedActions
-               };
-             }
-             return m;
-           }));
+             const newArr = [...prev];
+             newArr[index] = {
+                 ...target,
+                 groundingSources: update.sources ? update.sources : target.groundingSources,
+                 clarification: update.clarification ? update.clarification : target.clarification,
+                 suggestedActions: update.suggestedActions ? update.suggestedActions : target.suggestedActions,
+                 storyManifest: update.storyManifest ? update.storyManifest : target.storyManifest
+             };
+             return newArr;
+           });
 
            if (update.status) {
               setThinkingStatus(update.status);
@@ -454,7 +439,6 @@ function App() {
         },
         abortController.signal
       );
-
     } catch (error: any) {
       if (error.name !== 'AbortError') {
         console.error(error);
@@ -464,9 +448,9 @@ function App() {
       streamingMessageIdRef.current = null;
       abortControllerRef.current = null;
     }
-  };
+  }, [initAudio, messages]);
 
-  const handleClarificationSubmit = (msgId: string, selectedOption: string) => {
+  const handleClarificationSubmit = useCallback((msgId: string, selectedOption: string) => {
      const lastUserMsg = messages.slice().reverse().find(m => m.role === 'user');
      if (lastUserMsg) {
         handleSendMessage(lastUserMsg.text, { 
@@ -476,9 +460,9 @@ function App() {
           clarificationContext: selectedOption 
         });
      }
-  };
+  }, [messages, handleSendMessage]);
 
-  const handleAudioInput = async (blob: Blob) => {
+  const handleAudioInput = useCallback(async (blob: Blob) => {
     initAudio();
     setShowHistory(false);
     setAppState(AppState.THINKING);
@@ -498,44 +482,37 @@ function App() {
         setAppState(AppState.IDLE);
         console.error(error);
     }
-  };
+  }, [initAudio, handleSendMessage]);
 
-  // --- HISTORY HANDLERS ---
-  const handleToggleHistory = async () => {
+  const handleToggleHistory = useCallback(async () => {
       if (!showHistory) {
-          // Opening History: Fetch optimized list (metadata only)
           const saved = await storageService.getSessions();
           setSessions(saved);
       }
       setShowHistory(!showHistory);
-  };
+  }, [showHistory]);
 
-  const handleLoadSession = async (sessionSummary: ChatSession) => {
-      // FIX: Fetch full session details (including messages) from IDB on demand
+  const handleLoadSession = useCallback(async (sessionSummary: ChatSession) => {
       const fullSession = await storageService.getSession(sessionSummary.id);
-      
       if (fullSession && fullSession.messages) {
           setMessages(fullSession.messages);
           setCurrentSessionId(fullSession.id);
           setShowHistory(false);
-      } else {
-          console.error("Failed to load full session details");
       }
-  };
+  }, []);
 
-  const handleDeleteSession = async (id: string, e: React.MouseEvent) => {
+  const handleDeleteSession = useCallback(async (id: string, e: React.MouseEvent) => {
       e.stopPropagation();
       await storageService.deleteSession(id);
       setSessions(prev => prev.filter(s => s.id !== id));
-  };
+  }, []);
   
-  const handleClearChat = () => {
+  const handleClearChat = useCallback(() => {
      setMessages([]);
      setCurrentSessionId(Date.now().toString());
      setShowHistory(false);
-  }
+  }, []);
 
-  // Determine Background Mode
   let bgMode: BackgroundMode = 'idle';
   if (appState === AppState.THINKING) {
     bgMode = activeOptions.useSearch ? 'searching' : 'thinking';
@@ -546,46 +523,26 @@ function App() {
   return (
     <div className="relative w-full h-full flex flex-col overflow-hidden text-white font-sans selection:bg-cyan-500/30 selection:text-cyan-100">
       
-      {/* 1. Dynamic Background */}
       <BackgroundMesh mode={bgMode} />
 
-      {/* 2. Top Bar (Settings / Clear) */}
       <div className="absolute top-0 left-0 right-0 p-6 flex justify-between items-start z-50 pointer-events-none">
          <div className="pointer-events-auto">
-             <button 
-               onClick={handleClearChat}
-               className="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center transition-all border border-white/5 hover:border-white/20 text-zinc-400 hover:text-white"
-               title="New Chat"
-             >
+             <button onClick={handleClearChat} className="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center transition-all border border-white/5 hover:border-white/20 text-zinc-400 hover:text-white" title="New Chat">
                 <i className="fa-solid fa-plus"></i>
              </button>
          </div>
 
          <div className="pointer-events-auto relative" ref={userMenuRef}>
-            <button 
-              onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
-              className="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center transition-all border border-white/5 hover:border-white/20 text-zinc-400 hover:text-white"
-            >
+            <button onClick={() => setIsUserMenuOpen(!isUserMenuOpen)} className="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center transition-all border border-white/5 hover:border-white/20 text-zinc-400 hover:text-white">
               <i className="fa-solid fa-bars"></i>
             </button>
             <AnimatePresence>
               {isUserMenuOpen && (
-                <motion.div 
-                   initial={{ opacity: 0, scale: 0.9, y: -10 }}
-                   animate={{ opacity: 1, scale: 1, y: 0 }}
-                   exit={{ opacity: 0, scale: 0.9, y: -10 }}
-                   className="absolute right-0 top-12 w-48 bg-black/80 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl overflow-hidden py-1"
-                >
-                   <button 
-                     onClick={() => { setIsSettingsOpen(true); setIsUserMenuOpen(false); }}
-                     className="w-full text-left px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-3"
-                   >
+                <motion.div initial={{ opacity: 0, scale: 0.9, y: -10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.9, y: -10 }} className="absolute right-0 top-12 w-48 bg-black/80 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl overflow-hidden py-1">
+                   <button onClick={() => { setIsSettingsOpen(true); setIsUserMenuOpen(false); }} className="w-full text-left px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-3">
                      <i className="fa-solid fa-sliders w-4 text-center"></i> Settings
                    </button>
-                   <button 
-                     onClick={() => { window.open('https://ai.google.dev', '_blank'); setIsUserMenuOpen(false); }}
-                     className="w-full text-left px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-3"
-                   >
+                   <button onClick={() => { window.open('https://ai.google.dev', '_blank'); setIsUserMenuOpen(false); }} className="w-full text-left px-4 py-3 text-sm text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-3">
                      <i className="fa-brands fa-google w-4 text-center"></i> About Gemini
                    </button>
                 </motion.div>
@@ -594,44 +551,18 @@ function App() {
          </div>
       </div>
 
-      {/* 3. Main Content Area */}
       <div className="flex-1 relative flex flex-col min-h-0">
          <AnimatePresence mode="wait">
             {showHistory ? (
-                <motion.div 
-                    key="history"
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                    className="flex-1 min-h-0"
-                >
-                    <HistoryPanel 
-                        sessions={sessions}
-                        onLoadSession={handleLoadSession}
-                        onDeleteSession={handleDeleteSession}
-                        onClose={() => setShowHistory(false)}
-                    />
+                <motion.div key="history" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }} className="flex-1 min-h-0">
+                    <HistoryPanel sessions={sessions} onLoadSession={handleLoadSession} onDeleteSession={handleDeleteSession} onClose={() => setShowHistory(false)} />
                 </motion.div>
             ) : messages.length === 0 ? (
-                <motion.div
-                    key="welcome"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.5 }}
-                    className="flex-1 min-h-0"
-                >
+                <motion.div key="welcome" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.5 }} className="flex-1 min-h-0">
                     <WelcomeScreen onSuggestionClick={(txt, opts) => handleSendMessage(txt, opts)} />
                 </motion.div>
             ) : (
-                <motion.div
-                    key="chat"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="flex-1 min-h-0 relative"
-                >
+                <motion.div key="chat" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 min-h-0 relative">
                     <MessageList 
                         messages={messages} 
                         onPlayAudio={handleAudioTrigger}
@@ -645,37 +576,15 @@ function App() {
          </AnimatePresence>
       </div>
 
-      {/* 4. Input Area (Fixed Bottom) */}
       <div className="flex-none z-40 w-full flex justify-center bg-gradient-to-t from-black via-black/80 to-transparent pt-10">
-         <InputBar 
-            appState={appState}
-            onSendMessage={handleSendMessage}
-            onAudioInput={handleAudioInput}
-            onStop={handleStopGeneration}
-            onToggleHistory={handleToggleHistory}
-            isHistoryOpen={showHistory}
-         />
+         <InputBar appState={appState} onSendMessage={handleSendMessage} onAudioInput={handleAudioInput} onStop={handleStopGeneration} onToggleHistory={handleToggleHistory} isHistoryOpen={showHistory} />
       </div>
 
-      {/* 5. Overlays */}
-      <SettingsModal 
-         isOpen={isSettingsOpen} 
-         onClose={() => setIsSettingsOpen(false)}
-         settings={settings}
-         onUpdateSettings={setSettings}
-      />
+      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} settings={settings} onUpdateSettings={setSettings} />
 
       <AnimatePresence>
          {(isAudioPlaying || isBuffering) && (
-            <AudioPlayer 
-               queue={audioQueue}
-               currentChunkId={currentChunkId}
-               isPlaying={isAudioPlaying}
-               isBuffering={isBuffering}
-               onTogglePlay={togglePlayPause}
-               analyserNode={analyserRef.current}
-               currentProgress={audioProgress}
-            />
+            <AudioPlayer queue={audioQueue} currentChunkId={currentChunkId} isPlaying={isAudioPlaying} isBuffering={isBuffering} onTogglePlay={togglePlayPause} analyserNode={analyserRef.current} currentProgress={audioProgress} />
          )}
       </AnimatePresence>
 

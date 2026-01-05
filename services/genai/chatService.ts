@@ -1,3 +1,4 @@
+
 import { ai, MODELS } from "./client";
 import { ProcessingOptions, Clarification, Message } from "../../types";
 import { tokenEstimator } from "../tokenEstimator";
@@ -57,110 +58,81 @@ const runDirectorAgent = async (
   } catch(e) { console.warn("Director research skipped", e); }
 
   // STEP 2: Scripting & Direction
-  onUpdate({ status: "Director Planning Shots..." });
+  onUpdate({ status: "Writing Screenplay..." });
 
   const directorPrompt = `
-    ROLE: You are an Award-Winning Documentary Director and Data Cinematographer.
+    ROLE: You are an Award-Winning Documentary Director.
+    TASK: Write a JSON Screenplay for: "${prompt}".
     
-    TASK: Create a cinematic "Story Manifest" JSON for the request: "${prompt}".
+    RESEARCH: ${contextData}
+    CONTEXT: ${conversationContext}
     
-    RESEARCH CONTEXT: ${contextData}
-    CHAT HISTORY: ${conversationContext}
+    INSTRUCTIONS:
+    1. Structure the story into 3 to 5 distinct "Chapters".
+    2. "narrative": The spoken script (approx 2-3 sentences per chapter). Engaging, "Show Don't Tell".
+    3. "visualPrompt": A specific, photorealistic AI image prompt description (e.g., "Wide shot of Mars surface, red dust, cinematic lighting").
+    4. "mood": Choose ONE: 'heroic', 'tragic', 'mysterious', 'energetic', 'peaceful'.
     
-    DIRECTOR'S RULES:
-    1. **Narrative Style**: Do NOT write an article. Write a SCRIPT for a narrator. Use "Show, Don't Tell". Emotional, pacing from setup to climax.
-    2. **Visuals**: Define highly specific, photorealistic 8k image prompts.
-    3. **Data Cinematography**: If the story involves numbers/locations, you MUST insert a "widget".
-    4. **Audio Direction**: Assign a specific 'mood' ('heroic', 'tragic', 'mysterious', 'energetic', 'peaceful') to drive the procedural soundtrack.
-
-    CRITICAL: RETURN RAW JSON ONLY. DO NOT USE MARKDOWN BLOCKS (\`\`\`json).
+    IMPORTANT: Return ONLY valid JSON. No Markdown formatting. No \`\`\` code blocks.
     
-    JSON STRUCTURE:
+    JSON SCHEMA:
     {
       "title": "Cinematic Title",
-      "subjectName": "Main Subject",
+      "subjectName": "Short Subject Name (e.g. Apollo 11)",
       "chapters": [
         {
-          "id": "c1",
-          "title": "Act I",
-          "narrative": "Spoken word text...",
-          "visualPrompt": "Visual description...",
+          "id": "1",
+          "title": "Act I: The Setup",
+          "narrative": "The text to be spoken...",
+          "visualPrompt": "The image description...",
           "mood": "mysterious"
-        },
-        {
-          "id": "c2",
-          "title": "Act II",
-          "narrative": "Next part...",
-          "visualPrompt": "Visual description...",
-          "mood": "energetic",
-          "widget": {
-             "type": "CHART",
-             "data": { "type": "bar", "data": [{ "label": "X", "value": 10 }] }
-          }
         }
       ]
     }
-    [[STORY_MANIFEST_END]]
   `;
 
   try {
     // TRACK
     tokenEstimator.track('synthesis', MODELS.WRITER, directorPrompt);
 
-    const result = await ai.models.generateContentStream({
+    const result = await ai.models.generateContent({
       model: MODELS.WRITER,
-      contents: directorPrompt
+      contents: directorPrompt,
+      config: {
+        responseMimeType: 'application/json' // Force JSON mode for stability
+      }
     });
 
-    let accumulatedText = "";
-    let manifestFound = false;
-
-    for await (const chunk of result) {
-       if (signal?.aborted) return;
-       const textChunk = chunk.text;
-       if (textChunk) {
-         accumulatedText += textChunk;
-       }
-    }
+    const text = result.text || "";
     
-    // PARSING LOGIC: Robustly extract JSON, ignoring potential markdown wrappers
+    // Robust Parsing
     try {
-        // 1. Clean up markdown
-        let cleanJson = accumulatedText
-            .replace(/```json/g, '')
-            .replace(/```/g, '')
-            .replace(/\[\[STORY_MANIFEST_END\]\]/g, '')
-            .trim();
-
-        // 2. Find outermost braces if extra text exists
-        const match = cleanJson.match(/\{[\s\S]*\}/);
-        if (match) {
-            cleanJson = match[0];
-            const manifest = JSON.parse(cleanJson);
+        const cleanJson = text.replace(/```json/g, '').replace(/```/g, '').trim();
+        const manifest = JSON.parse(cleanJson);
+        
+        if (manifest.chapters && Array.isArray(manifest.chapters)) {
+            // Add IDs if missing
+            manifest.chapters = manifest.chapters.map((c: any, i: number) => ({
+                ...c,
+                id: `ch_${Date.now()}_${i}`
+            }));
             
-            // Validate essential fields before sending
-            if (manifest.chapters && manifest.chapters.length > 0) {
-                onUpdate({ storyManifest: manifest });
-                onUpdate({ status: "Production Ready" });
-                manifestFound = true;
-            }
+            onUpdate({ storyManifest: manifest });
+            onUpdate({ status: "completed" });
+        } else {
+            throw new Error("Invalid schema");
         }
     } catch (e) {
-        console.error("Director JSON Parse Error", e);
-    }
-
-    if (!manifestFound) {
+        console.error("JSON Parse Error", e);
         onUpdate({ 
-           text: "I apologize, but I couldn't generate a valid screenplay for this story. Please try a different topic.",
+           text: "I was unable to generate a valid screenplay. Please try asking in a different way.",
            status: "Director Error"
         });
-    } else {
-        onUpdate({ status: "completed" });
     }
 
   } catch (error) {
     console.error("Director Agent Failed", error);
-    throw error;
+    onUpdate({ status: "error" });
   }
 };
 

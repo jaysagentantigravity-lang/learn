@@ -23,19 +23,18 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const animationRef = useRef<number>(0);
 
-  // Canvas State for Particles
+  // Optimized Particle System
   const particlesRef = useRef<Array<{x: number, y: number, vx: number, vy: number, life: number}>>([]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !analyserNode) return;
 
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
     if (!ctx) return;
 
-    // High DPI setup
-    const dpr = window.devicePixelRatio || 1;
-    const size = 120; // Internal canvas size
+    const dpr = Math.min(window.devicePixelRatio || 1, 2); // Cap DPR at 2 for performance
+    const size = 120;
     canvas.width = size * dpr;
     canvas.height = size * dpr;
     ctx.scale(dpr, dpr);
@@ -44,117 +43,95 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({
     const dataArray = new Uint8Array(bufferLength);
 
     const render = () => {
-      // Get Audio Data
+      // PERFORMANCE OPTIMIZATION: Stop loop if hidden or paused
+      if (document.hidden) {
+         animationRef.current = requestAnimationFrame(render);
+         return;
+      }
+
       if (isPlaying && !isBuffering) {
         analyserNode.getByteFrequencyData(dataArray);
       } else {
-        // Fallback or Decay when paused
-        for(let i=0; i<bufferLength; i++) dataArray[i] = Math.max(0, dataArray[i] - 5);
+        // Simple decay without loop if mostly silent
+        let hasSignal = false;
+        for(let i=0; i<bufferLength; i++) {
+            if(dataArray[i] > 5) { dataArray[i] -= 5; hasSignal = true; }
+            else dataArray[i] = 0;
+        }
+        if(!hasSignal && !isBuffering) {
+            ctx.clearRect(0, 0, size, size);
+            // Throttle polling when idle
+            setTimeout(() => { animationRef.current = requestAnimationFrame(render); }, 100);
+            return;
+        }
       }
 
-      // Clear
       ctx.clearRect(0, 0, size, size);
-      
       const centerX = size / 2;
       const centerY = size / 2;
       
-      // Calculate Average Volume (Intensity)
+      // Calculate Average Volume
       let sum = 0;
-      // Focus on lower-mid frequencies for "body" movement
       for (let i = 0; i < bufferLength / 2; i++) sum += dataArray[i];
       const avgVolume = sum / (bufferLength / 2);
-      const pulseFactor = 1 + (avgVolume / 255) * 0.4; // Scale 1.0 to 1.4
+      const pulseFactor = 1 + (avgVolume / 255) * 0.4;
 
-      // --- LAYER 1: The Bio-Core (Organic Blob) ---
+      // --- LAYER 1: The Bio-Core (Simplified) ---
       ctx.beginPath();
       const baseRadius = 22;
-      const points = 12; // Number of vertices for the blob
-      
-      // Rotate the blob slowly
+      const points = 12;
       const time = Date.now() / 1000;
-      const rotationOffset = time * 0.5;
-
+      
       for (let i = 0; i <= points; i++) {
-        const angle = (i / points) * Math.PI * 2 + rotationOffset;
-        // Map frequency data to vertex displacement
-        // We wrap around the dataArray to match points
+        const angle = (i / points) * Math.PI * 2 + (time * 0.5);
         const dataIndex = Math.floor((i / points) * (bufferLength / 4));
         const val = isPlaying && !isBuffering ? dataArray[dataIndex] : 0;
-        const deformation = (val / 255) * 12;
-        
-        const r = (baseRadius + deformation) * (isBuffering ? 0.9 : pulseFactor);
-        
+        const r = (baseRadius + ((val/255)*12)) * (isBuffering ? 0.9 : pulseFactor);
         const x = centerX + Math.cos(angle) * r;
         const y = centerY + Math.sin(angle) * r;
-        
         if (i === 0) ctx.moveTo(x, y);
-        else {
-           // Smooth quadratic curves for organic feel
-           // (Simplified to lineTo for performance, but good enough with high point count)
-           ctx.lineTo(x, y);
-        }
+        else ctx.lineTo(x, y);
       }
       ctx.closePath();
 
-      // Bio-Luminescent Gradient
       const gradient = ctx.createRadialGradient(centerX, centerY, 5, centerX, centerY, 40);
-      if (isBuffering) {
-         gradient.addColorStop(0, 'rgba(255, 255, 255, 0.8)');
-         gradient.addColorStop(0.5, 'rgba(6, 182, 212, 0.4)'); // Cyan
-         gradient.addColorStop(1, 'rgba(6, 182, 212, 0)');
-      } else {
-         gradient.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
-         gradient.addColorStop(0.4, 'rgba(34, 211, 238, 0.6)'); // Cyan-400
-         gradient.addColorStop(1, 'rgba(8, 145, 178, 0)'); // Cyan-700
-      }
+      gradient.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
+      gradient.addColorStop(1, isBuffering ? 'rgba(6, 182, 212, 0)' : 'rgba(8, 145, 178, 0)');
       
       ctx.fillStyle = gradient;
       ctx.fill();
 
-      // Inner Core Glow
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, 10 * pulseFactor, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-      ctx.fill();
-
-      // --- LAYER 2: Progress Ring (Outer Orbit) ---
-      if (!isBuffering) {
+      // --- LAYER 2: Progress Ring ---
+      if (!isBuffering && currentProgress > 0) {
           ctx.beginPath();
           ctx.arc(centerX, centerY, 54, -Math.PI/2, (-Math.PI/2) + (Math.PI * 2 * currentProgress));
           ctx.strokeStyle = 'rgba(34, 211, 238, 0.5)';
           ctx.lineWidth = 2;
-          ctx.lineCap = 'round';
           ctx.stroke();
       }
 
-      // --- LAYER 3: Particles (Dust) ---
-      if (isPlaying && !isBuffering && avgVolume > 30) {
-         // Emit new particles
-         if (particlesRef.current.length < 20 && Math.random() > 0.7) {
-            const angle = Math.random() * Math.PI * 2;
-            const r = 25;
-            particlesRef.current.push({
-               x: centerX + Math.cos(angle) * r,
-               y: centerY + Math.sin(angle) * r,
-               vx: Math.cos(angle) * (Math.random() * 0.5 + 0.2),
-               vy: Math.sin(angle) * (Math.random() * 0.5 + 0.2),
-               life: 1.0
-            });
-         }
+      // --- LAYER 3: Particles (Reduced Count) ---
+      if (isPlaying && !isBuffering && avgVolume > 30 && Math.random() > 0.8 && particlesRef.current.length < 10) {
+        const angle = Math.random() * Math.PI * 2;
+        const r = 25;
+        particlesRef.current.push({
+            x: centerX + Math.cos(angle) * r,
+            y: centerY + Math.sin(angle) * r,
+            vx: Math.cos(angle) * 0.5,
+            vy: Math.sin(angle) * 0.5,
+            life: 1.0
+        });
       }
 
-      // Update & Draw Particles
-      particlesRef.current.forEach((p, idx) => {
+      particlesRef.current.forEach((p) => {
          p.x += p.vx;
          p.y += p.vy;
-         p.life -= 0.02;
-         
+         p.life -= 0.05; // Faster decay
          ctx.beginPath();
          ctx.arc(p.x, p.y, 1.5 * p.life, 0, Math.PI * 2);
          ctx.fillStyle = `rgba(165, 243, 252, ${p.life})`;
          ctx.fill();
       });
-      // Cleanup dead particles
       particlesRef.current = particlesRef.current.filter(p => p.life > 0);
 
       animationRef.current = requestAnimationFrame(render);
@@ -182,17 +159,14 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({
            onClick={onTogglePlay}
            className="relative w-[100px] h-[100px] flex items-center justify-center focus:outline-none group"
         >
-           {/* Glass Container Background */}
            <div className="absolute inset-2 bg-black/40 backdrop-blur-xl rounded-full border border-white/10 shadow-2xl transition-transform duration-300 group-hover:scale-105 group-active:scale-95" />
            
-           {/* The Bio-Canvas */}
            <canvas 
              ref={canvasRef} 
              style={{ width: '120px', height: '120px' }}
              className="relative z-10 pointer-events-none mix-blend-screen"
            />
            
-           {/* Icon Overlay (Only visible on hover or pause) */}
            <div className={`absolute z-20 text-white transition-opacity duration-300 flex items-center justify-center ${isPlaying && !isBuffering ? 'opacity-0 group-hover:opacity-100' : 'opacity-100'}`}>
               {isBuffering ? (
                  <i className="fa-solid fa-spinner fa-spin text-xl text-cyan-200"></i>
@@ -203,7 +177,6 @@ const AudioPlayer: React.FC<AudioPlayerProps> = ({
               )}
            </div>
 
-           {/* Buffering Label Floating */}
            <AnimatePresence>
              {isBuffering && (
                <motion.div
